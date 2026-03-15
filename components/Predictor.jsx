@@ -1,6 +1,5 @@
 "use client";
 import { useState, useEffect, useCallback, useRef } from "react";
-import { UserButton } from "@clerk/nextjs";
 
 // ─── INITIAL GAME DATA (baseline from pre-game research) ───
 const INITIAL_GAMES = [
@@ -725,7 +724,6 @@ export default function App() {
               <span style={{ display:"inline-block",animation:refreshing?"spin 1s linear infinite":"none" }}>↻</span>
               {refreshing?"Updating...":"Refresh"}
             </button>
-            <UserButton afterSignOutUrl="/" appearance={{ elements: { avatarBox: { width: 32, height: 32 } } }} />
           </div>
         </div>
         <div style={{ display:"flex",alignItems:"center",gap:"8px",marginBottom:"16px" }}>
