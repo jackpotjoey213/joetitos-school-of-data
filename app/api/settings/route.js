@@ -1,22 +1,20 @@
-import { auth } from "@clerk/nextjs/server";
 import { NextResponse } from "next/server";
-import { supabase } from "@/lib/supabase";
+import { createClient } from "@supabase/supabase-js";
 
-export async function GET() {
-  const { userId } = auth();
-  if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+);
 
-  const { data, error } = await supabase
+export async function GET(req) {
+  const userId = req.headers.get("x-user-id") || "default";
+
+  const { data } = await supabase
     .from("user_settings")
     .select("*")
     .eq("user_id", userId)
     .single();
 
-  if (error && error.code !== "PGRST116") {
-    return NextResponse.json({ error: error.message }, { status: 500 });
-  }
-
-  // Also fetch prediction history
   const { data: predictions } = await supabase
     .from("predictions")
     .select("*")
@@ -31,13 +29,11 @@ export async function GET() {
 }
 
 export async function POST(req) {
-  const { userId } = auth();
-  if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-
   const body = await req.json();
+  const userId = body.userId || "default";
 
   if (body.type === "settings") {
-    const { data, error } = await supabase
+    await supabase
       .from("user_settings")
       .upsert({
         user_id: userId,
@@ -46,12 +42,11 @@ export async function POST(req) {
         updated_at: new Date().toISOString()
       }, { onConflict: "user_id" });
 
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
     return NextResponse.json({ ok: true });
   }
 
   if (body.type === "prediction") {
-    const { data, error } = await supabase
+    await supabase
       .from("predictions")
       .insert({
         user_id: userId,
@@ -68,7 +63,6 @@ export async function POST(req) {
         game_date: body.date
       });
 
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
     return NextResponse.json({ ok: true });
   }
 
