@@ -54,23 +54,36 @@ async function fetchNFLTeamStats() {
 
 async function fetchRecentNFLDates() {
   // Map team -> list of dates played in the last 14 days, for rest/bye detection.
-  const schedule = {};
+  // Parallel: the old sequential loop (14 ESPN scoreboard fetches, one
+  // after another) is why this route took ~64s on Vercel, where each
+  // fetch is slower than locally — the UI then still showed dashes
+  // because the refresh had not finished when the browser looked.
+  const dates = [];
   for (let i = 1; i <= 14; i++) {
     const d = new Date(); d.setDate(d.getDate() - i);
+    dates.push(d);
+  }
+  const results = await Promise.all(dates.map(async (d) => {
     const ds = d.toISOString().split("T")[0].replace(/-/g, "");
     try {
       const resp = await fetch(`https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?dates=${ds}&limit=100`, { cache: "no-store" });
-      if (!resp.ok) continue;
-      const data = await resp.json();
-      for (const ev of (data.events || [])) {
-        const comp = ev.competitions?.[0];
-        if (!comp) continue;
-        for (const t of (comp.competitors || [])) {
-          const abbr = norm(t.team?.abbreviation || "");
-          if (abbr) { if (!schedule[abbr]) schedule[abbr] = []; schedule[abbr].push(d.toISOString().split("T")[0]); }
-        }
+      if (!resp.ok) return null;
+      return await resp.json();
+    } catch { return null; }
+  }));
+  const schedule = {};
+  for (let idx = 0; idx < results.length; idx++) {
+    const data = results[idx];
+    if (!data) continue;
+    const d = dates[idx];
+    for (const ev of (data.events || [])) {
+      const comp = ev.competitions?.[0];
+      if (!comp) continue;
+      for (const t of (comp.competitors || [])) {
+        const abbr = norm(t.team?.abbreviation || "");
+        if (abbr) { if (!schedule[abbr]) schedule[abbr] = []; schedule[abbr].push(d.toISOString().split("T")[0]); }
       }
-    } catch {}
+    }
   }
   return schedule;
 }
@@ -125,7 +138,18 @@ export async function POST(req) {
   const teamStats = teamData.teams || {};
 
   const results = [];
-  for (const g of games) {
+  // Weather (NFL only, domes skipped inside fetchGameWeather) — fetched
+  // in parallel up front, not one-by-one inside the loop below. The old
+  // sequential per-game weather fetches (14 more requests, one after
+  // another) were the other half of the ~64s Vercel refresh time.
+  const weatherList = await Promise.all(games.map((g) => {
+    // Locked/final games never reach the weather code below (early
+    // continue), so skip their forecast fetches entirely.
+    if (locked[g.espnId || g.id] || g.status === "final") return null;
+    return fetchGameWeather(g.homeAbbr, g.startTime);
+  }));
+  for (let gi = 0; gi < games.length; gi++) {
+    const g = games[gi];
     const odds = parseOdds(oddsData.games, g.away, g.home, g.awayAbbr, g.homeAbbr);
     const awayTeam = teamStats[norm(g.awayAbbr)] || teamStats[g.away?.toLowerCase()];
     const homeTeam = teamStats[norm(g.homeAbbr)] || teamStats[g.home?.toLowerCase()];
@@ -147,7 +171,7 @@ export async function POST(req) {
     if (status === "final") { results.push({ ...base, consensus: null, lockedPrediction: null, noPregamePrediction: true, isNewPrediction: false }); continue; }
 
     // Weather (NFL only, domes skipped inside fetchGameWeather).
-    const weather = await fetchGameWeather(g.homeAbbr, g.startTime);
+    const weather = weatherList[gi];
     const wAdj = weatherTotalAdjustment(weather);
     const rest = { away: restInfo(recentGames, g.awayAbbr), home: restInfo(recentGames, g.homeAbbr) };
     const miles = travelMiles(g.awayAbbr, g.homeAbbr);

@@ -84,25 +84,35 @@ async function fetchNBATeamStats() {
 
 async function fetchRecentSchedule() {
   const schedule = {};
+  const dates = [];
   for (let i = 1; i <= 3; i++) {
     const d = new Date(); d.setDate(d.getDate() - i);
+    dates.push(d);
+  }
+  // Parallel (same reason as NFL: sequential day-by-day fetches add up).
+  const results = await Promise.all(dates.map(async (d) => {
     const ds = d.toISOString().split("T")[0].replace(/-/g, "");
     try {
       const resp = await fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=${ds}&limit=50`, { cache: "no-store" });
-      if (!resp.ok) continue;
-      const data = await resp.json();
-      for (const ev of (data.events || [])) {
-        const comp = ev.competitions?.[0];
-        if (!comp) continue;
-        for (const t of (comp.competitors || [])) {
-          const abbr = norm(t.team?.abbreviation || "");
-          if (abbr) {
-            if (!schedule[abbr]) schedule[abbr] = [];
-            schedule[abbr].push(d.toISOString().split("T")[0]);
-          }
+      if (!resp.ok) return null;
+      return await resp.json();
+    } catch { return null; }
+  }));
+  for (let idx = 0; idx < results.length; idx++) {
+    const data = results[idx];
+    if (!data) continue;
+    const d = dates[idx];
+    for (const ev of (data.events || [])) {
+      const comp = ev.competitions?.[0];
+      if (!comp) continue;
+      for (const t of (comp.competitors || [])) {
+        const abbr = norm(t.team?.abbreviation || "");
+        if (abbr) {
+          if (!schedule[abbr]) schedule[abbr] = [];
+          schedule[abbr].push(d.toISOString().split("T")[0]);
         }
       }
-    } catch {}
+    }
   }
   return schedule;
 }
@@ -113,12 +123,21 @@ async function fetchRecentForm() {
   // Returns {} on any failure; callers blend only when >=3 games exist.
   const form = {};
   try {
+    const dates = [];
     for (let i = 1; i <= 7; i++) {
       const d = new Date(); d.setDate(d.getDate() - i);
+      dates.push(d);
+    }
+    // Parallel (sums are order-independent, so fetching days together
+    // does not change the result, only the speed).
+    const results = await Promise.all(dates.map(async (d) => {
       const ds = d.toISOString().split("T")[0].replace(/-/g, "");
       const resp = await fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=${ds}&limit=50`, { cache: "no-store" });
-      if (!resp.ok) continue;
-      const data = await resp.json();
+      if (!resp.ok) return null;
+      return await resp.json();
+    }));
+    for (const data of results) {
+      if (!data) continue;
       for (const ev of (data.events || [])) {
         if (ev.status?.type?.name !== "STATUS_FINAL") continue;
         const comp = ev.competitions?.[0];
