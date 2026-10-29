@@ -1,6 +1,6 @@
 export const metadata = {
   title: "Joetito's School of Data",
-  description: "AI-powered college basketball predictions with consensus modeling",
+  description: "NBA and NFL predictions from ESPN and Odds API data",
 };
 
 export default function RootLayout({ children }) {

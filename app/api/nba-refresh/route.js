@@ -17,25 +17,9 @@ function mlToProb(ml) { if (!ml) return 0.5; return ml < 0 ? Math.abs(ml)/(Math.
 const NBA_AVG_PPG = 114;
 const NBA_AVG_PACE = 100;
 
-// 2025-26 season stat fallbacks (PPG / OPPG) for all 30 teams
-// Used when ESPN standings API fails or returns null
-const NBA_FALLBACK_STATS = {
-  ATL: { ppg: 117.2, oppg: 117.5 }, BOS: { ppg: 122.1, oppg: 107.2 },
-  BKN: { ppg: 108.3, oppg: 117.4 }, CHA: { ppg: 107.1, oppg: 117.2 },
-  CHI: { ppg: 111.4, oppg: 113.8 }, CLE: { ppg: 118.6, oppg: 108.3 },
-  DAL: { ppg: 115.8, oppg: 111.9 }, DEN: { ppg: 116.4, oppg: 112.0 },
-  DET: { ppg: 110.3, oppg: 115.2 }, GSW: { ppg: 114.7, oppg: 113.6 },
-  HOU: { ppg: 114.9, oppg: 110.8 }, IND: { ppg: 119.8, oppg: 117.1 },
-  LAC: { ppg: 111.2, oppg: 112.4 }, LAL: { ppg: 113.5, oppg: 111.8 },
-  MEM: { ppg: 116.2, oppg: 113.4 }, MIA: { ppg: 109.7, oppg: 110.3 },
-  MIL: { ppg: 115.3, oppg: 114.1 }, MIN: { ppg: 113.8, oppg: 107.9 },
-  NOP: { ppg: 107.4, oppg: 118.2 }, NYK: { ppg: 113.9, oppg: 109.8 },
-  OKC: { ppg: 119.3, oppg: 104.9 }, ORL: { ppg: 109.4, oppg: 107.1 },
-  PHI: { ppg: 109.2, oppg: 112.8 }, PHX: { ppg: 112.5, oppg: 110.7 },
-  POR: { ppg: 108.6, oppg: 117.8 }, SAC: { ppg: 117.1, oppg: 116.4 },
-  SAS: { ppg: 111.3, oppg: 116.9 }, TOR: { ppg: 109.8, oppg: 115.3 },
-  UTA: { ppg: 108.2, oppg: 119.1 }, WAS: { ppg: 107.9, oppg: 118.6 }
-}; // possessions per game
+// No hardcoded season fallbacks in v2. If ESPN standings fail for a
+// team, that team is flagged as stats-unavailable and no pick is locked
+// for its game (see findTeam / hasTeamData below).
 
 // Detect if we're in playoffs (mid-April onward)
 function isPlayoffs() {
@@ -98,6 +82,41 @@ async function fetchRecentSchedule() {
   return schedule;
 }
 
+
+async function fetchRecentForm() {
+  // Last 7 days of final NBA games -> per-team recent PPG/OPPG.
+  // Returns {} on any failure; callers blend only when >=3 games exist.
+  const form = {};
+  try {
+    for (let i = 1; i <= 7; i++) {
+      const d = new Date(); d.setDate(d.getDate() - i);
+      const ds = d.toISOString().split("T")[0].replace(/-/g, "");
+      const resp = await fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=${ds}&limit=50`, { cache: "no-store" });
+      if (!resp.ok) continue;
+      const data = await resp.json();
+      for (const ev of (data.events || [])) {
+        if (ev.status?.type?.name !== "STATUS_FINAL") continue;
+        const comp = ev.competitions?.[0];
+        if (!comp) continue;
+        for (const t of (comp.competitors || [])) {
+          const abbr = norm(t.team?.abbreviation || "");
+          const opp = comp.competitors.find((x) => x !== t);
+          if (!abbr || !opp) continue;
+          if (!form[abbr]) form[abbr] = { pf: 0, pa: 0, n: 0 };
+          form[abbr].pf += parseInt(t.score) || 0;
+          form[abbr].pa += parseInt(opp.score) || 0;
+          form[abbr].n++;
+        }
+      }
+    }
+  } catch {}
+  const out = {};
+  for (const [k, v] of Object.entries(form)) {
+    if (v.n >= 3) out[k] = { ppg: +(v.pf / v.n).toFixed(1), oppg: +(v.pa / v.n).toFixed(1), n: v.n };
+  }
+  return out;
+}
+
 async function fetchNBAOdds() {
   const key = process.env.ODDS_API_KEY;
   if (!key) return { error: "No key", games: [] };
@@ -145,8 +164,8 @@ function findTeam(teams, abbr, name) {
   const found = teams[n] || teams[abbr] || teams[name?.toLowerCase()];
   if (found && found.ppg) return found;
   // Fallback to hardcoded 2025-26 season stats
-  const fallback = NBA_FALLBACK_STATS[n] || NBA_FALLBACK_STATS[abbr?.toUpperCase()];
-  return fallback || null;
+  // v2: no stale fallback. Missing team = no pick (flagged in UI).
+  return null;
 }
 
 // ==========================================
@@ -312,7 +331,7 @@ function buildNBAPrediction(g, odds, awayTeam, homeTeam, b2bInfo) {
       awayPitcher: null, homePitcher: null,
       awayPyth: null, homePyth: null,
       projPace: projPace.toFixed(0),
-      awayB2B: awayB2B, homeB2B: homeB2B,
+      awayB2B: awayB2B, homeB2B: homeB2B, noPick: !hasTeamData, noPickReason: !hasTeamData ? 'Stats unavailable' : null,
       isPlayoffs: playoffs,
       // Null out all MLB-specific fields
       tournamentRound: null, tournamentDiscount: null, liveProjectedTotal: null,
@@ -329,10 +348,19 @@ export async function POST(req) {
   const { games, lockedPredictions } = await req.json();
   const locked = lockedPredictions || {};
 
-  const [oddsData, teamData, recentGames] = await Promise.all([
-    fetchNBAOdds(), fetchNBATeamStats(), fetchRecentSchedule()
+  const [oddsData, teamData, recentGames, recentForm] = await Promise.all([
+    fetchNBAOdds(), fetchNBATeamStats(), fetchRecentSchedule(), fetchRecentForm()
   ]);
   const teamStats = teamData.teams || {};
+  // Recency blend (v2): 70% season / 30% last-7-days, only when a team
+  // has >=3 recent finals. Otherwise season stats are used as-is and
+  // the blend is flagged as unavailable in the model output.
+  for (const [abbr, rf] of Object.entries(recentForm || {})) {
+    const base = teamStats[abbr];
+    if (base?.ppg) {
+      teamStats[abbr] = { ...base, ppg: +(base.ppg * 0.7 + rf.ppg * 0.3).toFixed(1), oppg: +(base.oppg * 0.7 + rf.oppg * 0.3).toFixed(1), recentForm: rf };
+    }
+  }
 
   // B2B detection
   const yesterday = new Date(Date.now() - 86400000).toISOString().split("T")[0];
@@ -371,7 +399,7 @@ export async function POST(req) {
       oddsSpread: odds?.fav?{fav:odds.fav,line:-odds.spread}:null,
       oddsTotal: odds?.total||null,
       oddsML: (odds?.awayML||odds?.homeML)?{away:odds.awayML||0,home:odds.homeML||0}:null,
-      consensus: pred.consensus,
+      consensus: (!odds?.total ? { ...pred.consensus, noPick: true, noPickReason: 'No Odds line', totalCall: null } : pred.consensus),
       isNewPrediction: status === "scheduled" || status === undefined,
       injuries: null
     };
