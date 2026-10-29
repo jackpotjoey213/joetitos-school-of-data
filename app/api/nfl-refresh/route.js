@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { buildNFLPrediction, mlToProb } from "@/lib/nflModel";
 import { fetchGameWeather, weatherTotalAdjustment, NFL_STADIUMS } from "@/lib/weather";
 
-export const maxDuration = 30;
+export const maxDuration = 60;
 
 const TM = {
   ARI: "ARI", ATL: "ATL", BAL: "BAL", BUF: "BUF", CAR: "CAR", CHI: "CHI",

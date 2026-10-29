@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-export const maxDuration = 30;
+export const maxDuration = 60;
 
 // --- NBA TEAM MAP (all 30 teams) ---
 const TM = {

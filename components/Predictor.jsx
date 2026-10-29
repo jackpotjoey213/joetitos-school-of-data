@@ -180,6 +180,9 @@ export default function Predictor() {
   const [propsLoading, setPropsLoading] = useState({});
   const [legs, setLegs] = useState([]);
   const refreshedSports = useRef(new Set());
+  // Latest handleRefresh, so the auto-refresh timeout is not cancelled
+  // when handleRefresh's identity changes (e.g. history loads) before
+  // the timeout fires. See the auto-refresh effect below.
 
   const loadHistory = useCallback(async () => {
     try {
@@ -199,7 +202,7 @@ export default function Predictor() {
   }, []);
 
   const loadGames = useCallback(async (sp) => {
-    setGames([]); setLiveAdj({}); setLog("Loading games...");
+    setGames([]); setLiveAdj({}); setSources(null); setLog("Loading games...");
     try {
       const endpoint = sp === "nfl" ? "/api/nfl-scores?days=1" : "/api/nba-scores?days=1";
       const resp = await fetch(endpoint);
@@ -266,15 +269,35 @@ export default function Predictor() {
     setRefreshing(false);
   }, [games, sport, history]);
 
+  const handleRefreshRef = useRef();
+  handleRefreshRef.current = handleRefresh;
   useEffect(() => { loadHistory(); }, [loadHistory]);
   useEffect(() => { refreshedSports.current = new Set(); loadGames(sport); }, [sport, loadGames]);
   useEffect(() => {
-    if (games.length && !refreshedSports.current.has(sport)) {
+    // ROOT CAUSE of the preview dashes (found Oct 29, 2026):
+    // On a sport switch, this effect used to run once with the OLD
+    // sport's games still in state, mark the new sport as "refreshed",
+    // and schedule a timeout — then loadGames replaced the games, the
+    // effect cleanup cancelled that timeout, and the "refreshed" mark
+    // blocked any new auto-refresh. So switching to NFL (or back to
+    // NBA) left cards at dashes forever, no matter how fast the server
+    // was, until the user manually pressed Refresh. Fixed three ways:
+    // (1) only auto-refresh games that actually belong to this sport
+    // (games[0].sport comes from the scores payload), so stale games
+    // never mark the new sport refreshed; (2) mark the sport refreshed
+    // only inside the timeout, when the refresh actually fires, not
+    // when it is scheduled; (3) call the refresh through a ref, so a
+    // handleRefresh identity change (e.g. history loading) does not
+    // cancel a pending timeout.
+    if (!games.length) return;
+    if (games[0].sport && games[0].sport !== sport) return;
+    if (refreshedSports.current.has(sport)) return;
+    const t = setTimeout(() => {
       refreshedSports.current.add(sport);
-      const t = setTimeout(() => handleRefresh(), 800);
-      return () => clearTimeout(t);
-    }
-  }, [games, sport, handleRefresh]);
+      handleRefreshRef.current?.();
+    }, 800);
+    return () => clearTimeout(t);
+  }, [games, sport]);
 
   const loadProps = async (game) => {
     const key = game.id;
