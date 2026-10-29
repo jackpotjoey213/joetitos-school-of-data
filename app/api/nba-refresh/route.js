@@ -21,38 +21,63 @@ const NBA_AVG_PACE = 100;
 // team, that team is flagged as stats-unavailable and no pick is locked
 // for its game (see findTeam / hasTeamData below).
 
-// Detect if we're in playoffs (mid-April onward)
-function isPlayoffs() {
-  const now = new Date();
-  return now.getMonth() >= 3 && now.getDate() >= 15; // April 15+
+// Playoffs are detected ONLY from ESPN's real season signal, never from
+// the calendar. The old date check (month >= April, day >= 15) fired for
+// every game from mid-April through December, so regular-season games in
+// October were wrongly flagged as playoffs. ESPN scoreboard season:
+// type 2 = regular season, type 3 = postseason (slug "post-season").
+// On any fetch failure, default to false — never default to playoffs.
+async function fetchIsPlayoffs() {
+  try {
+    const resp = await fetch("https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?limit=50", { cache: "no-store" });
+    if (!resp.ok) return false;
+    const data = await resp.json();
+    const season = data?.season || {};
+    if (season.type === 3) return true;
+    for (const ev of (data?.events || [])) {
+      const s = ev?.season || {};
+      const slug = (s.slug || "").toLowerCase();
+      if (s.type === 3 || slug.includes("post") || slug.includes("playoff")) return true;
+    }
+    return false;
+  } catch { return false; }
 }
 
 // --- DATA FETCHING ---
 
 async function fetchNBATeamStats() {
   try {
-    const resp = await fetch("https://site.api.espn.com/apis/site/v2/sports/basketball/nba/standings", { cache: "no-store" });
+    // Same endpoint bug as NFL: standings live at apis/v2, NOT
+    // apis/site/v2 (which 404s). The old code silently fell back to the
+    // 114-point league average for every team, masking the failure.
+    // The apis/v2 shape is conferences directly under children, each
+    // with standings.entries — walk recursively to cover both shapes.
+    const resp = await fetch("https://site.api.espn.com/apis/v2/sports/basketball/nba/standings", { cache: "no-store" });
     if (!resp.ok) return { error: `${resp.status}`, teams: {} };
     const data = await resp.json();
     const teams = {};
-    for (const group of (data.children || [])) {
-      for (const div of (group.children || [])) {
-        for (const entry of (div.standings?.entries || [])) {
-          const abbr = norm(entry.team?.abbreviation || "");
-          const name = (entry.team?.displayName || "").toLowerCase();
-          const stats = {};
-          for (const s of (entry.stats || [])) { stats[s.name] = parseFloat(s.value) || 0; }
-          const w = stats.wins || 0, l = stats.losses || 0, gp = w + l || 1;
-          const ppg = stats.pointsFor ? stats.pointsFor / gp : stats.avgPointsFor || NBA_AVG_PPG;
-          const oppg = stats.pointsAgainst ? stats.pointsAgainst / gp : stats.avgPointsAgainst || NBA_AVG_PPG;
-          const info = { w, l, gp, ppg: +ppg.toFixed(1), oppg: +oppg.toFixed(1), diff: +(ppg - oppg).toFixed(1) };
-          if (abbr) teams[abbr] = info;
-          if (name) teams[name] = info;
-          const short = (entry.team?.shortDisplayName || "").toLowerCase();
-          if (short) teams[short] = info;
-        }
+    const walk = (node) => {
+      for (const entry of (node?.standings?.entries || [])) {
+        const abbr = norm(entry.team?.abbreviation || "");
+        const name = (entry.team?.displayName || "").toLowerCase();
+        const short = (entry.team?.shortDisplayName || "").toLowerCase();
+        const stats = {};
+        for (const s of (entry.stats || [])) { stats[s.name] = parseFloat(s.value) || 0; }
+        const w = stats.wins || 0, l = stats.losses || 0, gp = w + l || 1;
+        // Totals take priority; per-game averages are the fallback.
+        // No league-average fallback here: a team with neither is
+        // stats-unavailable (findTeam returns null, no pick is locked).
+        const ppg = stats.pointsFor ? stats.pointsFor / gp : (stats.avgPointsFor || 0);
+        const oppg = stats.pointsAgainst ? stats.pointsAgainst / gp : (stats.avgPointsAgainst || 0);
+        if (!ppg && !oppg) continue;
+        const info = { w, l, gp, ppg: +ppg.toFixed(1), oppg: +oppg.toFixed(1), diff: +(ppg - oppg).toFixed(1) };
+        if (abbr) teams[abbr] = info;
+        if (name) teams[name] = info;
+        if (short) teams[short] = info;
       }
-    }
+      for (const c of (node?.children || [])) walk(c);
+    };
+    walk(data);
     return { teams };
   } catch (e) { return { error: e.message, teams: {} }; }
 }
@@ -171,10 +196,9 @@ function findTeam(teams, abbr, name) {
 // ==========================================
 // NBA PREDICTION ENGINE (isolated from MLB)
 // ==========================================
-function buildNBAPrediction(g, odds, awayTeam, homeTeam, b2bInfo) {
+function buildNBAPrediction(g, odds, awayTeam, homeTeam, b2bInfo, playoffs = false) {
   const line = odds?.total || g.total || 220;
   const spreadLine = odds?.spread || 0;
-  const playoffs = isPlayoffs();
 
   // --- NBA TEAM STATS (strictly basketball metrics) ---
   const awayPPG = awayTeam?.ppg || NBA_AVG_PPG;
@@ -348,8 +372,8 @@ export async function POST(req) {
   const { games, lockedPredictions } = await req.json();
   const locked = lockedPredictions || {};
 
-  const [oddsData, teamData, recentGames, recentForm] = await Promise.all([
-    fetchNBAOdds(), fetchNBATeamStats(), fetchRecentSchedule(), fetchRecentForm()
+  const [oddsData, teamData, recentGames, recentForm, playoffs] = await Promise.all([
+    fetchNBAOdds(), fetchNBATeamStats(), fetchRecentSchedule(), fetchRecentForm(), fetchIsPlayoffs()
   ]);
   const teamStats = teamData.teams || {};
   // Recency blend (v2): 70% season / 30% last-7-days, only when a team
@@ -389,7 +413,7 @@ export async function POST(req) {
     if (locked[lockKey]) return { id: g.id, espnId: g.espnId, status, sport: "nba", awayScore: g.liveScore?.away??null, homeScore: g.liveScore?.home??null, clock: g.liveScore?.clock||"", currentTotal: locked[lockKey].line||g.total, consensus: locked[lockKey].consensus||null, lockedPrediction: locked[lockKey], isNewPrediction: false, currentSpread: odds?.fav?`${odds.fav} -${odds.spread}`:null, oddsRange: odds?.range||null, numBooks: odds?.books||0, oddsSpread: odds?.fav?{fav:odds.fav,line:-odds.spread}:null, oddsTotal: odds?.total||null, oddsML: (odds?.awayML||odds?.homeML)?{away:odds.awayML,home:odds.homeML}:null, injuries: null };
     if (status === "final") return { id: g.id, espnId: g.espnId, status, sport: "nba", awayScore: g.liveScore?.away??null, homeScore: g.liveScore?.home??null, clock: g.liveScore?.clock||"", currentTotal: odds?.total||g.total, currentSpread: odds?.fav?`${odds.fav} -${odds.spread}`:null, oddsRange: odds?.range||null, numBooks: odds?.books||0, oddsSpread: odds?.fav?{fav:odds.fav,line:-odds.spread}:null, oddsTotal: odds?.total||null, oddsML: (odds?.awayML||odds?.homeML)?{away:odds.awayML,home:odds.homeML}:null, consensus: null, lockedPrediction: null, noPregamePrediction: true, isNewPrediction: false, injuries: null };
 
-    const pred = buildNBAPrediction(g, odds, g.awayTeam, g.homeTeam, b2bInfo);
+    const pred = buildNBAPrediction(g, odds, g.awayTeam, g.homeTeam, b2bInfo, playoffs);
     return {
       id: g.id, espnId: g.espnId, status, sport: "nba",
       awayScore: g.liveScore?.away??null, homeScore: g.liveScore?.home??null,
@@ -411,7 +435,7 @@ export async function POST(req) {
       oddsAPI: oddsData.error ? `x ${oddsData.error}` : `OK ${oddsData.games?.length} (${oddsData.remaining} left)`,
       espnStats: teamData.error ? `x ${teamData.error}` : `OK ${Object.keys(teamStats).length} entries`,
       b2b: `${Object.values(b2bInfo).filter(b => b.isB2B).length} teams on B2B`,
-      playoffs: isPlayoffs() ? "ACTIVE (-4 pts, -3 pace)" : "Regular season"
+      playoffs: playoffs ? "ACTIVE (-4 pts, -3 pace)" : "Regular season"
     }
   });
 }

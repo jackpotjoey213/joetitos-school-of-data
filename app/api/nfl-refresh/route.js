@@ -23,7 +23,10 @@ function fuzzy(a, b) {
 
 async function fetchNFLTeamStats() {
   try {
-    const resp = await fetch("https://site.api.espn.com/apis/site/v2/sports/football/nfl/standings", { cache: "no-store" });
+    // NOTE: the standings endpoint is apis/v2, NOT apis/site/v2 — the
+    // /site/v2 path returns 404 ("Event ID 'null' not found"), which is
+    // why every team previously came back "unavailable".
+    const resp = await fetch("https://site.api.espn.com/apis/v2/sports/football/nfl/standings", { cache: "no-store" });
     if (!resp.ok) return { error: `${resp.status}`, teams: {} };
     const data = await resp.json();
     const teams = {};
@@ -32,12 +35,11 @@ async function fetchNFLTeamStats() {
         const abbr = norm(entry.team?.abbreviation || "");
         const stats = {};
         for (const s of (entry.stats || [])) stats[s.name] = parseFloat(s.value) || 0;
-        const w = stats.wins || 0, l = stats.losses || 0, gp = w + l || 1;
-        // ESPN NFL standings stats vary by season view; accept several names.
-        const pf = stats.pointsFor ?? stats.points ?? stats.avgPointsFor ? (stats.pointsFor || stats.points || 0) : 0;
-        const pa = stats.pointsAgainst ?? stats.pointsAllowed ?? 0;
-        const ppg = pf ? pf / gp : (stats.avgPointsFor || 0);
-        const oppg = pa ? pa / gp : (stats.avgPointsAgainst || 0);
+        // ESPN NFL standings give season TOTALS (pointsFor/pointsAgainst),
+        // not per-game averages. Divide by games played (wins+losses+ties).
+        const w = stats.wins || 0, l = stats.losses || 0, t = stats.ties || 0, gp = w + l + t || 1;
+        const ppg = stats.pointsFor ? stats.pointsFor / gp : (stats.avgPointsFor || 0);
+        const oppg = stats.pointsAgainst ? stats.pointsAgainst / gp : (stats.avgPointsAgainst || 0);
         const info = { w, l, gp, ppg: +ppg.toFixed(1), oppg: +oppg.toFixed(1) };
         if (abbr && (ppg || oppg)) teams[abbr] = info;
         const name = (entry.team?.displayName || "").toLowerCase();
@@ -160,6 +162,10 @@ export async function POST(req) {
     const noPick = !hasTeamData || !lineTotal;
     const consensus = {
       ...pred,
+      // Never present a generic league-average total as a team-specific
+      // prediction: if team stats are genuinely missing, the model
+      // points/total/spread are null, not a made-up 43.
+      ...(!hasTeamData ? { modelTotal: null, awayPts: null, homePts: null, modelSpread: null, spreadCall: null, moneylinePick: null } : {}),
       totalCall: noPick ? null : pred.totalCall,
       noPick,
       noPickReason: !hasTeamData ? "Stats unavailable" : !lineTotal ? "No Odds line" : null,
