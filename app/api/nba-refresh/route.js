@@ -348,12 +348,20 @@ function buildNBAPrediction(g, odds, awayTeam, homeTeam, b2bInfo, playoffs = fal
   if (playoffs) conf += 3;
   const strength = Math.min(88, Math.max(25, conf));
 
-  // Spread pick
+  // Spread pick (FIXED Oct 31, 2026): the old code compared modelSpread
+  // to -spreadLine for every game, ignoring which team is favored. That
+  // gave the WRONG pick for home favorites — e.g. MIN @ SA, Oct 31:
+  // model margin SA +4 vs market SA -12.3 should pick MIN +12.3 (76%),
+  // but the old code picked SA at 24%. The market home margin is
+  // +spread when the home team is favored, -spread when the away team
+  // is favored (odds.fav is the favored abbreviation; odds.spread is
+  // the absolute magnitude). NFL already did this correctly.
   let spreadCall = null, spreadReason = "";
-  const modelVsSpread = modelSpread - (-spreadLine);
-  if (Math.abs(modelVsSpread) >= 2) {
-    spreadCall = modelSpread > -spreadLine ? g.homeAbbr : g.awayAbbr;
-    spreadReason = `Model spread ${modelSpread > 0 ? "+" : ""}${modelSpread} vs line ${-spreadLine}`;
+  const marketMarginHome = odds?.fav ? (odds.fav === g.homeAbbr ? spreadLine : -spreadLine) : null;
+  const modelVsSpread = marketMarginHome == null ? 0 : modelSpread - marketMarginHome;
+  if (marketMarginHome != null && Math.abs(modelVsSpread) >= 2) {
+    spreadCall = modelSpread > marketMarginHome ? g.homeAbbr : g.awayAbbr;
+    spreadReason = `Model spread ${modelSpread > 0 ? "+" : ""}${modelSpread} vs market home margin ${marketMarginHome > 0 ? "+" : ""}${marketMarginHome} (${odds.fav} -${spreadLine})`;
   }
 
   // ML pick

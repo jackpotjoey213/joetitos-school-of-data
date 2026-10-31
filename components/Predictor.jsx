@@ -479,10 +479,26 @@ export default function Predictor() {
         // If no lock exists, the card says so plainly — no "?", no 0s.
         const storedLocked = (() => { try { return getLocked(sport)[game.espnId || game.id] || null; } catch { return null; } })();
         const lockedRecord = adj.lockedPrediction || storedLocked;
-        const effCons = lockedRecord?.consensus || cons;
+        const rawEffCons = lockedRecord?.consensus || cons;
         const effTotalLine = lockedRecord?.line > 0 ? lockedRecord.line : (adj.oddsTotal && adj.oddsTotal > 0 ? adj.oddsTotal : (game.total && game.total > 0 ? game.total : null));
         const effSpreadOdds = lockedRecord?.spreadOdds || adj.oddsSpread || null;
         const effMlOdds = lockedRecord?.mlOdds || adj.oddsML || null;
+        // Display-time correction for locks created with the buggy NBA
+        // spread logic (Oct 31, 2026): the locked model score, lines, and
+        // % inputs are unchanged, but a spread pick that was derived
+        // incorrectly from them is corrected here, so an already-locked
+        // game does not keep showing a <50% "pick". Only applies when
+        // the lock itself stored a spread line, so the correction uses
+        // lock-time lines, not today's moved market.
+        let effCons = rawEffCons, spreadCorrected = false;
+        if (lockedRecord?.spreadOdds && rawEffCons?.modelSpread != null && rawEffCons?.spreadCall) {
+          const mkt = marketMarginHome(lockedRecord.spreadOdds, game.homeAbbr);
+          if (mkt != null) {
+            const diff = rawEffCons.modelSpread - mkt;
+            const corrected = Math.abs(diff) >= 2 ? (rawEffCons.modelSpread > mkt ? game.homeAbbr : game.awayAbbr) : null;
+            if (corrected && corrected !== rawEffCons.spreadCall) { effCons = { ...rawEffCons, spreadCall: corrected }; spreadCorrected = true; }
+          }
+        }
         const pcts = effCons && !noPick ? perBetPcts(effCons, sport, effTotalLine, effSpreadOdds, game.homeAbbr, game.awayAbbr) : { totalPct: null, spreadPct: null, mlPct: null, homeWinPct: null, awayWinPct: null };
         const totalPct = lockedRecord?.totalPct ?? pcts.totalPct;
         const spreadPct = lockedRecord?.spreadPct ?? pcts.spreadPct;
@@ -524,6 +540,7 @@ export default function Predictor() {
                   <div>ML: {effCons.moneylinePick || "—"}{mlPickPct != null ? ` — ${mlPickPct}%` : ""} → Actual winner {finalGrades.actualWinner || "Tie"} — <span style={{ color: finalGrades.ml === true ? "#22c55e" : finalGrades.ml === false ? "#ef4444" : "#f59e0b" }}>{gradeMark(finalGrades.ml)}</span></div>
                 </div>
                 <div style={{ fontSize: 10, color: "#94a3b8", marginTop: 4 }}>Win chance at lock: {game.awayAbbr} {awayWinPct ?? "—"}% • {game.homeAbbr} {homeWinPct ?? "—"}% • Percentages are model chance only.</div>
+                {spreadCorrected && <div style={{ fontSize: 10, color: "#f59e0b", marginTop: 2 }}>Spread pick corrected for the home-favorite bug (locked model score and lines unchanged).</div>}
               </div>
             )}
             {noPick && !isFinal && <div style={{ marginTop: 8, padding: "8px 10px", borderRadius: 8, background: "#f59e0b22", border: "1px solid #f59e0b55", color: "#fbbf24", fontSize: 11, fontWeight: 700 }}>⚠️ {cons.noPickReason || "Data unavailable"} — no pick locked for this game. The game is shown, not hidden, and no fake line is used.</div>}
@@ -532,6 +549,7 @@ export default function Predictor() {
                 <div style={{ fontSize: 11, color: "#94a3b8" }}>Model: {cons.awayPts ?? "?"} - {cons.homePts ?? "?"} • Total {cons.modelTotal}</div>
                 <div style={{ fontSize: 14, fontWeight: 800, marginTop: 4 }}>O/U: {cons.totalCall || "—"} {cons.totalCall ? `vs ${effTotalLine || "—"}` : ""}{totalPct != null ? ` — ${totalPct}%` : ""} • Spread: {cons.spreadCall || "—"}{spreadPct != null ? ` — ${spreadPct}%` : ""} • ML: {cons.moneylinePick || "—"}{mlPickPct != null ? ` — ${mlPickPct}%` : ""}</div>
                 {(homeWinPct != null && awayWinPct != null) && <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>Win chance: {game.awayAbbr} {awayWinPct}% • {game.homeAbbr} {homeWinPct}% • Percentages are model chance only.</div>}
+                {spreadCorrected && <div style={{ fontSize: 10, color: "#f59e0b", marginTop: 2 }}>Spread pick corrected for the home-favorite bug (locked model score and lines unchanged).</div>}
                 {locked && <div style={{ fontSize: 10, color: "#22c55e" }}>🔒 Pregame pick locked (line {locked.line}) — this is the pick that will be graded.</div>}
                 {cons.reasons?.length > 0 && <div style={{ fontSize: 11, color: "#cbd5e1", marginTop: 6 }}>{cons.reasons.slice(0, 4).map((r, i) => <div key={i}>{r}</div>)}</div>}
                 {adj.oddsML && cons.moneylinePick && (
