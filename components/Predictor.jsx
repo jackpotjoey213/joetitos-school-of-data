@@ -172,6 +172,28 @@ function Tracker({ history, sport, trackerAvailable }) {
   );
 }
 
+// Mockup row layout (Oct 31, 2026): one small row per bet, % (or grade)
+// on the right — the layout Joey approved in the mockups, replacing the
+// single large wrapped pick line. Model % only, no market-implied %.
+function PickRow({ label, pick, detail, pct, grade, gradeColor }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 9, background: "#0f0f1a", border: "1px solid #2a2a3a", borderRadius: 9, padding: "8px 10px", marginBottom: 6 }}>
+      <div style={{ width: 78, fontSize: 10, fontWeight: 700, color: "#94a3b8" }}>{label}</div>
+      <div style={{ flex: 1 }}>
+        <div style={{ fontSize: 14, fontWeight: 800 }}>{pick}</div>
+        {detail && <div style={{ fontSize: 11, color: "#94a3b8" }}>{detail}</div>}
+      </div>
+      {pct != null && <div style={{ fontSize: 18, fontWeight: 900, color: "#22c55e" }}>{pct}%</div>}
+      {grade && <div style={{ fontSize: 14, fontWeight: 800, color: gradeColor || "#22c55e", textAlign: "right" }}>{grade}</div>}
+    </div>
+  );
+}
+function spreadDisplay(pick, spreadOdds) {
+  if (!pick) return "—";
+  if (!spreadOdds || spreadOdds.fav == null || spreadOdds.line == null) return pick;
+  return pick === spreadOdds.fav ? `${spreadOdds.fav} ${spreadOdds.line}` : `${pick} +${Math.abs(spreadOdds.line)}`;
+}
+
 function ParlayBuilder({ legs, setLegs }) {
   const [stake, setStake] = useState(20);
   const [goal, setGoal] = useState(350);
@@ -331,6 +353,30 @@ export default function Predictor() {
             gameStartTime: g.startTime || null,
           });
         }
+        // Repair an already-locked spread pick that was derived with the
+        // buggy NBA logic (Oct 31, 2026, SA case): if the stored pick's
+        // own model % would be below 50% when recomputed from the locked
+        // model spread and the spread line available now (stored, else
+        // current), replace ONLY the spread pick / spread line / spread %
+        // in the stored lock. Locked model score, total line, and other
+        // picks are untouched, so later grading uses the corrected pick.
+        try {
+          const existing = getLocked(sport)[lockKey];
+          if (existing?.consensus?.modelSpread != null && existing.spreadCall) {
+            const repairSpread = existing.spreadOdds || u.oddsSpread || null;
+            const repairMkt = repairSpread ? marketMarginHome(repairSpread, g.homeAbbr) : null;
+            if (repairMkt != null) {
+              const repairDiff = existing.consensus.modelSpread - repairMkt;
+              const repairCorrected = Math.abs(repairDiff) >= 2 ? (existing.consensus.modelSpread > repairMkt ? g.homeAbbr : g.awayAbbr) : null;
+              if (repairCorrected && repairCorrected !== existing.spreadCall) {
+                const allLocked = getLocked(sport);
+                const repairPcts = perBetPcts({ ...existing.consensus, spreadCall: repairCorrected }, sport, existing.line, repairSpread, g.homeAbbr, g.awayAbbr);
+                allLocked[lockKey] = { ...existing, spreadCall: repairCorrected, spreadOdds: repairSpread, spreadPct: repairPcts.spreadPct, consensus: { ...existing.consensus, spreadCall: repairCorrected } };
+                localStorage.setItem(lockKeyFor(sport), JSON.stringify(allLocked));
+              }
+            }
+          }
+        } catch { /* lock repair is best-effort; display correction still applies */ }
         if (u.status === "final" && u.awayScore != null && u.homeScore != null) {
           const lockedPred = getLocked(sport)[lockKey];
           if (lockedPred && lockedPred.line > 0 && !history.find((h) => h.gameId === String(lockKey) && h.sport === sport)) {
@@ -484,24 +530,31 @@ export default function Predictor() {
         const effSpreadOdds = lockedRecord?.spreadOdds || adj.oddsSpread || null;
         const effMlOdds = lockedRecord?.mlOdds || adj.oddsML || null;
         // Display-time correction for locks created with the buggy NBA
-        // spread logic (Oct 31, 2026): the locked model score, lines, and
-        // % inputs are unchanged, but a spread pick that was derived
-        // incorrectly from them is corrected here, so an already-locked
-        // game does not keep showing a <50% "pick". Only applies when
-        // the lock itself stored a spread line, so the correction uses
-        // lock-time lines, not today's moved market.
-        let effCons = rawEffCons, spreadCorrected = false;
-        if (lockedRecord?.spreadOdds && rawEffCons?.modelSpread != null && rawEffCons?.spreadCall) {
-          const mkt = marketMarginHome(lockedRecord.spreadOdds, game.homeAbbr);
+        // spread logic (Oct 31, 2026): the locked model score and total
+        // line are unchanged, but a spread pick derived incorrectly from
+        // them is corrected here, so an already-locked game does not keep
+        // showing a <50% "pick". First tries the spread line stored in
+        // the lock; if the lock predates spread-line saving (the reason
+        // the Oct 31 SA card stayed at SA 24% after the first fix), it
+        // falls back to the current market spread shown on the card,
+        // labeled as such — it does not pretend that was the lock line.
+        let effCons = rawEffCons, spreadCorrected = false, spreadCorrectionLabel = null;
+        if (rawEffCons?.modelSpread != null && rawEffCons?.spreadCall && effSpreadOdds) {
+          const mkt = marketMarginHome(effSpreadOdds, game.homeAbbr);
           if (mkt != null) {
             const diff = rawEffCons.modelSpread - mkt;
             const corrected = Math.abs(diff) >= 2 ? (rawEffCons.modelSpread > mkt ? game.homeAbbr : game.awayAbbr) : null;
-            if (corrected && corrected !== rawEffCons.spreadCall) { effCons = { ...rawEffCons, spreadCall: corrected }; spreadCorrected = true; }
+            if (corrected && corrected !== rawEffCons.spreadCall) {
+              effCons = { ...rawEffCons, spreadCall: corrected }; spreadCorrected = true;
+              spreadCorrectionLabel = lockedRecord?.spreadOdds
+                ? "Spread pick corrected for the home-favorite bug (locked model score and lines unchanged)."
+                : "Spread pick corrected using current market line (original lock did not save a spread line).";
+            }
           }
         }
         const pcts = effCons && !noPick ? perBetPcts(effCons, sport, effTotalLine, effSpreadOdds, game.homeAbbr, game.awayAbbr) : { totalPct: null, spreadPct: null, mlPct: null, homeWinPct: null, awayWinPct: null };
         const totalPct = lockedRecord?.totalPct ?? pcts.totalPct;
-        const spreadPct = lockedRecord?.spreadPct ?? pcts.spreadPct;
+        const spreadPct = spreadCorrected ? pcts.spreadPct : (lockedRecord?.spreadPct ?? pcts.spreadPct);
         const mlPickPct = lockedRecord?.mlPct ?? pcts.mlPct;
         const homeWinPct = pcts.homeWinPct, awayWinPct = pcts.awayWinPct;
         // Final-game grading, computed from the locked record + final score.
@@ -513,7 +566,7 @@ export default function Predictor() {
           finalGrades = {
             actualTotal: at, actualMarginHome: mHome, actualWinner: winner,
             total: gradeTotal(at, lockedRecord.line, effCons.totalCall),
-            spread: gradeSpread(mHome, lockedRecord.spreadOdds || null, effCons.spreadCall, game.homeAbbr, game.awayAbbr),
+            spread: gradeSpread(mHome, effSpreadOdds, effCons.spreadCall, game.homeAbbr, game.awayAbbr),
             ml: gradeML(winner, effCons.moneylinePick),
           };
         }
@@ -534,24 +587,26 @@ export default function Predictor() {
             {isFinal && lockedRecord && finalGrades && (
               <div style={{ marginTop: 10 }}>
                 <div style={{ fontSize: 11, color: "#94a3b8", textAlign: "center" }}>Locked: {effCons.awayPts ?? "?"} - {effCons.homePts ?? "?"} • Model total {effCons.modelTotal} • Line {lockedRecord.line} • Actual total {finalGrades.actualTotal} • {finalGrades.actualWinner ? `${finalGrades.actualWinner} won` : "Tie"}</div>
-                <div style={{ fontSize: 13, fontWeight: 800, marginTop: 6, lineHeight: 1.6 }}>
-                  <div>O/U: {effCons.totalCall || "—"}{effTotalLine ? ` ${effTotalLine}` : ""}{totalPct != null ? ` — ${totalPct}%` : ""} → Actual {finalGrades.actualTotal} — <span style={{ color: finalGrades.total === true ? "#22c55e" : finalGrades.total === false ? "#ef4444" : "#f59e0b" }}>{gradeMark(finalGrades.total)}</span></div>
-                  <div>Spread: {effCons.spreadCall || "—"}{effSpreadOdds ? ` ${effSpreadOdds.fav} ${effSpreadOdds.line}` : ""}{spreadPct != null ? ` — ${spreadPct}%` : ""} → Actual margin {finalGrades.actualMarginHome > 0 ? `${game.homeAbbr} +${finalGrades.actualMarginHome}` : finalGrades.actualMarginHome < 0 ? `${game.awayAbbr} +${Math.abs(finalGrades.actualMarginHome)}` : "Tie"} — {finalGrades.spread == null ? <span style={{ color: "#f59e0b" }}>Can't grade from old data (no spread line saved)</span> : <span style={{ color: finalGrades.spread === true ? "#22c55e" : finalGrades.spread === false ? "#ef4444" : "#f59e0b" }}>{gradeMark(finalGrades.spread)}</span>}</div>
-                  <div>ML: {effCons.moneylinePick || "—"}{mlPickPct != null ? ` — ${mlPickPct}%` : ""} → Actual winner {finalGrades.actualWinner || "Tie"} — <span style={{ color: finalGrades.ml === true ? "#22c55e" : finalGrades.ml === false ? "#ef4444" : "#f59e0b" }}>{gradeMark(finalGrades.ml)}</span></div>
+                <div style={{ marginTop: 8 }}>
+                  <PickRow label="OVER / UNDER" pick={effCons.totalCall ? `${effCons.totalCall} ${effTotalLine || ""}${totalPct != null ? ` — ${totalPct}%` : ""}` : "—"} detail={`Model total ${effCons.modelTotal} • Actual total ${finalGrades.actualTotal}`} grade={gradeMark(finalGrades.total)} gradeColor={finalGrades.total === true ? "#22c55e" : finalGrades.total === false ? "#ef4444" : "#f59e0b"} />
+                  <PickRow label="SPREAD (ATS)" pick={effCons.spreadCall ? `${spreadDisplay(effCons.spreadCall, effSpreadOdds)}${spreadPct != null ? ` — ${spreadPct}%` : ""}` : "—"} detail={`Actual margin ${finalGrades.actualMarginHome > 0 ? `${game.homeAbbr} +${finalGrades.actualMarginHome}` : finalGrades.actualMarginHome < 0 ? `${game.awayAbbr} +${Math.abs(finalGrades.actualMarginHome)}` : "Tie"}`} grade={finalGrades.spread == null ? "Can't grade from old data" : gradeMark(finalGrades.spread)} gradeColor={finalGrades.spread == null ? "#f59e0b" : finalGrades.spread === true ? "#22c55e" : finalGrades.spread === false ? "#ef4444" : "#f59e0b"} />
+                  <PickRow label="MONEYLINE" pick={effCons.moneylinePick ? `${effCons.moneylinePick} to win${mlPickPct != null ? ` — ${mlPickPct}%` : ""}` : "—"} detail={`Actual winner ${finalGrades.actualWinner || "Tie"} • Win chance ${game.awayAbbr} ${awayWinPct ?? "—"}% • ${game.homeAbbr} ${homeWinPct ?? "—"}%`} grade={gradeMark(finalGrades.ml)} gradeColor={finalGrades.ml === true ? "#22c55e" : finalGrades.ml === false ? "#ef4444" : "#f59e0b"} />
                 </div>
-                <div style={{ fontSize: 10, color: "#94a3b8", marginTop: 4 }}>Win chance at lock: {game.awayAbbr} {awayWinPct ?? "—"}% • {game.homeAbbr} {homeWinPct ?? "—"}% • Percentages are model chance only.</div>
-                {spreadCorrected && <div style={{ fontSize: 10, color: "#f59e0b", marginTop: 2 }}>Spread pick corrected for the home-favorite bug (locked model score and lines unchanged).</div>}
+                <div style={{ fontSize: 10, color: "#94a3b8", marginTop: 4 }}>Percentages are model chance only.</div>
+                {spreadCorrected && <div style={{ fontSize: 10, color: "#f59e0b", marginTop: 2 }}>{spreadCorrectionLabel}</div>}
               </div>
             )}
             {noPick && !isFinal && <div style={{ marginTop: 8, padding: "8px 10px", borderRadius: 8, background: "#f59e0b22", border: "1px solid #f59e0b55", color: "#fbbf24", fontSize: 11, fontWeight: 700 }}>⚠️ {cons.noPickReason || "Data unavailable"} — no pick locked for this game. The game is shown, not hidden, and no fake line is used.</div>}
             {!isFinal && cons && !noPick && (
-              <div style={{ marginTop: 10, textAlign: "center" }}>
-                <div style={{ fontSize: 11, color: "#94a3b8" }}>Model: {cons.awayPts ?? "?"} - {cons.homePts ?? "?"} • Total {cons.modelTotal}</div>
-                <div style={{ fontSize: 14, fontWeight: 800, marginTop: 4 }}>O/U: {cons.totalCall || "—"} {cons.totalCall ? `vs ${effTotalLine || "—"}` : ""}{totalPct != null ? ` — ${totalPct}%` : ""} • Spread: {cons.spreadCall || "—"}{spreadPct != null ? ` — ${spreadPct}%` : ""} • ML: {cons.moneylinePick || "—"}{mlPickPct != null ? ` — ${mlPickPct}%` : ""}</div>
-                {(homeWinPct != null && awayWinPct != null) && <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>Win chance: {game.awayAbbr} {awayWinPct}% • {game.homeAbbr} {homeWinPct}% • Percentages are model chance only.</div>}
-                {spreadCorrected && <div style={{ fontSize: 10, color: "#f59e0b", marginTop: 2 }}>Spread pick corrected for the home-favorite bug (locked model score and lines unchanged).</div>}
-                {locked && <div style={{ fontSize: 10, color: "#22c55e" }}>🔒 Pregame pick locked (line {locked.line}) — this is the pick that will be graded.</div>}
-                {cons.reasons?.length > 0 && <div style={{ fontSize: 11, color: "#cbd5e1", marginTop: 6 }}>{cons.reasons.slice(0, 4).map((r, i) => <div key={i}>{r}</div>)}</div>}
+              <div style={{ marginTop: 10 }}>
+                <div style={{ fontSize: 11, color: "#94a3b8", textAlign: "center" }}>Model: {effCons.awayPts ?? "?"} - {effCons.homePts ?? "?"} • Total {effCons.modelTotal}</div>
+                <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, color: "#94a3b8", margin: "10px 0 6px" }}>MODEL PICKS — MODEL % ONLY</div>
+                <PickRow label="OVER / UNDER" pick={effCons.totalCall ? `Take ${effCons.totalCall} ${effTotalLine || ""}` : "—"} detail={effCons.modelTotal != null && effTotalLine ? `Model total ${effCons.modelTotal} vs line ${effTotalLine}` : null} pct={totalPct} />
+                <PickRow label="SPREAD (ATS)" pick={effCons.spreadCall ? `Take ${spreadDisplay(effCons.spreadCall, effSpreadOdds)}` : "—"} detail={effCons.modelSpread != null && effSpreadOdds ? `Model margin ${effCons.modelSpread > 0 ? `${game.homeAbbr} +${effCons.modelSpread}` : `${game.awayAbbr} +${Math.abs(effCons.modelSpread)}`} vs market ${effSpreadOdds.fav} ${effSpreadOdds.line}` : null} pct={spreadPct} />
+                <PickRow label="MONEYLINE" pick={effCons.moneylinePick ? `Take ${effCons.moneylinePick} to win` : "No moneyline pick"} detail={(homeWinPct != null && awayWinPct != null) ? `${game.awayAbbr} ${awayWinPct}% to win • ${game.homeAbbr} ${homeWinPct}% to win` : null} pct={mlPickPct} />
+                {spreadCorrected && <div style={{ fontSize: 10, color: "#f59e0b", marginTop: 2 }}>{spreadCorrectionLabel}</div>}
+                {locked && <div style={{ fontSize: 10, color: "#22c55e", textAlign: "center" }}>🔒 Pregame pick locked (line {locked.line}) — this is the pick that will be graded.</div>}
+                {cons.reasons?.length > 0 && <div style={{ fontSize: 11, color: "#cbd5e1", marginTop: 6, textAlign: "center" }}>{cons.reasons.slice(0, 4).map((r, i) => <div key={i}>{r}</div>)}</div>}
                 {adj.oddsML && cons.moneylinePick && (
                   <button onClick={() => { const odds = cons.moneylinePick === game.homeAbbr ? adj.oddsML.home : adj.oddsML.away; if (odds) setLegs([...legs, { label: `${cons.moneylinePick} ML (${game.awayAbbr} @ ${game.homeAbbr})`, odds, gameId: String(game.espnId || game.id), prob: cons.moneylinePick === game.homeAbbr ? parseFloat(cons.homeWinProb) / 100 : parseFloat(cons.awayWinProb) / 100 }]); }} style={{ marginTop: 8, padding: "6px 10px", borderRadius: 8, background: "#a855f7", color: "#fff", border: "none", cursor: "pointer", fontSize: 11 }}>Add ML to parlay</button>
                 )}
