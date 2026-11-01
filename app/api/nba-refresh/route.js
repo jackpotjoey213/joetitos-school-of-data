@@ -189,18 +189,36 @@ function fuzzy(a, b) {
   return x.split(/\s+/).filter(w => w.length > 3).some(w => y.split(/\s+/).filter(v => v.length > 3).includes(w));
 }
 
+// teamNameMatches: strict team-name match for odds outcomes.
+// fuzzy() matches ANY shared word longer than 3 letters, so two teams
+// sharing a city ("Los Angeles Chargers" vs "Los Angeles Rams") match
+// BOTH sides, and the last outcome overwrites both ML prices (both -310).
+// This matcher requires an exact full name, an abbreviation, or the
+// distinctive last word (the nickname: Chargers vs Rams, Jets vs Giants).
+function teamNameMatches(oName, fullName, abbr) {
+  if (!oName || !fullName) return false;
+  const n = oName.toLowerCase().replace(/[^a-z0-9]/g, " ").trim();
+  const f = fullName.toLowerCase().replace(/[^a-z0-9]/g, " ").trim();
+  if (n === f) return true;
+  if (abbr && n === abbr.toLowerCase()) return true;
+  const nLast = n.split(/\s+/).pop();
+  const fLast = f.split(/\s+/).pop();
+  return !!(nLast && fLast && nLast === fLast);
+}
+
 function parseOdds(og, aN, hN, aA, hA) {
   if (!og?.length) return null;
-  let m = og.find(o => (fuzzy(o.away_team, aN) || fuzzy(o.away_team, aA)) && (fuzzy(o.home_team, hN) || fuzzy(o.home_team, hA)));
+  let m = og.find(o => teamNameMatches(o.away_team, aN, aA) && teamNameMatches(o.home_team, hN, hA));
+  if (!m) m = og.find(o => (fuzzy(o.away_team, aN) || fuzzy(o.away_team, aA)) && (fuzzy(o.home_team, hN) || fuzzy(o.home_team, hA)));
   if (!m) m = og.find(o => fuzzy(o.away_team, aN) || fuzzy(o.home_team, hN));
   if (!m) return null;
   let cT=0,tC=0,mn=999,mx=0,sL=0,sC=0,fv="",aM=0,hM=0;
   for (const b of (m.bookmakers||[])) for (const k of (b.markets||[])) {
     if (k.key==="totals") for (const o of (k.outcomes||[])) if (o.name==="Over"&&o.point){cT+=o.point;tC++;if(o.point<mn)mn=o.point;if(o.point>mx)mx=o.point;}
     if (k.key==="spreads") for (const o of (k.outcomes||[])) if (o.point&&o.point<0){sL+=Math.abs(o.point);sC++;fv=o.name;}
-    if (k.key==="h2h") for (const o of (k.outcomes||[])) {if(fuzzy(o.name,aN)||fuzzy(o.name,aA))aM=o.price;if(fuzzy(o.name,hN)||fuzzy(o.name,hA))hM=o.price;}
+    if (k.key==="h2h") for (const o of (k.outcomes||[])) {if(teamNameMatches(o.name,aN,aA))aM=o.price;else if(teamNameMatches(o.name,hN,hA))hM=o.price;}
   }
-  return { total:tC>0?Math.round(cT/tC*10)/10:0, books:tC, range:{min:mn<999?mn:0,max:mx}, spread:sC>0?Math.round(sL/sC*10)/10:0, fav:fv?(fuzzy(fv,hN)||fuzzy(fv,hA)?hA:aA):"", awayML:aM, homeML:hM };
+  return { total:tC>0?Math.round(cT/tC*10)/10:0, books:tC, range:{min:mn<999?mn:0,max:mx}, spread:sC>0?Math.round(sL/sC*10)/10:0, fav:fv?(teamNameMatches(fv,hN,hA)&&!teamNameMatches(fv,aN,aA)?hA:teamNameMatches(fv,aN,aA)&&!teamNameMatches(fv,hN,hA)?aA:(fuzzy(fv,hN)||fuzzy(fv,hA)?hA:aA)):"", awayML:aM, homeML:hM };
 }
 
 function findTeam(teams, abbr, name) {
