@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-async function ptDateParts(offsetDays = 0) {
+function ptDateParts(offsetDays = 0) {
   // America/Los_Angeles date, not server UTC — the site displays PT dates,
   // and the no-dates ESPN endpoint was dropping today's slate (Nov 1, 2026).
   const pt = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
