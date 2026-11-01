@@ -5,7 +5,7 @@ import { buildLiveProjection } from "@/lib/nflModel";
 function mlToProb(ml) { if (!ml) return 0.5; return ml < 0 ? Math.abs(ml) / (Math.abs(ml) + 100) : 100 / (ml + 100); }
 function americanToDecimal(odds) { return odds > 0 ? 1 + odds / 100 : 1 + 100 / Math.abs(odds); }
 function decimalToAmerican(dec) { if (dec >= 2) return Math.round((dec - 1) * 100); return Math.round(-100 / (dec - 1)); }
-function lockKeyFor(sport) { return sport === "nfl" ? "joetito_locked_nfl_v2" : "joetito_locked_nba_v2"; }
+function lockKeyFor(sport) { return sport === "nfl" ? "joetito_locked_nfl_v2" : sport === "ncaab" ? "joetito_locked_ncaab_v2" : "joetito_locked_nba_v2"; }
 function getLocked(sport) { try { return JSON.parse(localStorage.getItem(lockKeyFor(sport)) || "{}"); } catch { return {}; } }
 function lockPrediction(sport, gameId, pred) {
   try {
@@ -361,7 +361,7 @@ export default function Predictor() {
   const loadGames = useCallback(async (sp) => {
     setGames([]); setLiveAdj({}); setSources(null); setLog("Loading games...");
     try {
-      const endpoint = sp === "nfl" ? "/api/nfl-scores?days=1" : "/api/nba-scores?days=1";
+      const endpoint = sp === "nfl" ? "/api/nfl-scores?days=1" : sp === "ncaab" ? "/api/ncaab-scores?days=1" : "/api/nba-scores?days=1";
       const resp = await fetch(endpoint);
       const data = await resp.json();
       setGames(data.games || []);
@@ -374,7 +374,7 @@ export default function Predictor() {
     setRefreshing(true); setLog("Fetching scores, odds, and model predictions...");
     try {
       const locked = getLocked(sport);
-      const endpoint = sport === "nfl" ? "/api/nfl-refresh" : "/api/nba-refresh";
+      const endpoint = sport === "nfl" ? "/api/nfl-refresh" : sport === "ncaab" ? "/api/ncaab-refresh" : "/api/nba-refresh";
       const resp = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ games, lockedPredictions: locked }) });
       const result = await resp.json();
       const updates = result.updates || [];
@@ -560,12 +560,13 @@ export default function Predictor() {
     <div style={{ maxWidth: 720, margin: "0 auto", padding: "12px 8px 40px", background: "#0a0a0f", color: "#e2e8f0", fontFamily: "Inter, system-ui, sans-serif", minHeight: "100vh" }}>
       <div style={{ textAlign: "center", marginBottom: 12 }}>
         <div style={{ fontSize: 26, fontWeight: 900 }}>🎓 JOETITO'S SCHOOL OF DATA</div>
-        <div style={{ fontSize: 11, color: "#94a3b8" }}>NBA + NFL only • ESPN + Odds API • Pregame picks are locked and graded • Live is not tracked</div>
+        <div style={{ fontSize: 11, color: "#94a3b8" }}>NBA + NFL + College Basketball • ESPN + Odds API • Pregame picks are locked and graded • Live is not tracked</div>
       </div>
       <div style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "center", marginBottom: 12 }}>
         <select value={sport} onChange={(e) => setSport(e.target.value)} style={{ padding: "8px 12px", borderRadius: 10, background: "#1e293b", color: "#fff", border: "1px solid #334155", fontWeight: 700 }}>
           <option value="nba">🏀 NBA</option>
           <option value="nfl">🏈 NFL</option>
+          <option value="ncaab">🏀 College Basketball</option>
         </select>
         <button onClick={handleRefresh} disabled={refreshing} style={{ padding: "8px 14px", borderRadius: 10, background: refreshing ? "#334155" : "#6366f1", color: "#fff", border: "none", fontWeight: 700, cursor: "pointer" }}>{refreshing ? "Updating..." : "↻ Refresh"}</button>
         {lastRefresh && <span style={{ fontSize: 10, color: "#6366f1" }}>Updated {lastRefresh.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>}
@@ -601,7 +602,7 @@ export default function Predictor() {
             if (period == null || mins == null) liveReason = "Clock/period unavailable — live projection unavailable";
             else if (period > 4) liveReason = "Overtime — no live pick";
             else {
-              liveProj = buildLiveProjection({ pregame: { awayPts: lockedCons.awayPts, homePts: lockedCons.homePts, modelTotal: lockedCons.modelTotal }, awayScore: game.liveScore.away, homeScore: game.liveScore.home, period, minutesRemainingInPeriod: mins, totalMinutes: sport === "nba" ? 48 : 60, sport });
+              liveProj = buildLiveProjection({ pregame: { awayPts: lockedCons.awayPts, homePts: lockedCons.homePts, modelTotal: lockedCons.modelTotal }, awayScore: game.liveScore.away, homeScore: game.liveScore.home, period, minutesRemainingInPeriod: mins, totalMinutes: sport === "nba" ? 48 : sport === "ncaab" ? 40 : 60, sport });
               if (!liveProj) liveReason = "Live projection unavailable";
             }
           }
