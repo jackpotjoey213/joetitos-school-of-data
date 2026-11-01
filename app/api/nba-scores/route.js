@@ -1,30 +1,26 @@
 import { NextResponse } from "next/server";
 
+async function ptDateParts(offsetDays = 0) {
+  // America/Los_Angeles date, not server UTC — the site displays PT dates,
+  // and the no-dates ESPN endpoint was dropping today's slate (Nov 1, 2026).
+  const pt = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
+  const [y, m, d] = pt.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d + offsetDays));
+  return dt.toISOString().split("T")[0].replace(/-/g, "");
+}
+
 async function fetchESPNNBA(daysBack = 1) {
   const events = [];
-  // Today
-  try {
-    const resp = await fetch("https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?limit=50", { cache: "no-store" });
-    if (resp.ok) { const d = await resp.json(); if (d.events) events.push(...d.events); }
-  } catch (e) { console.log("ESPN NBA error:", e.message); }
-
-  const seenIds = new Set(events.map(e => e.id));
-  // Past days
-  for (let i = daysBack; i >= 1; i--) {
-    const d = new Date(); d.setDate(d.getDate() - i);
-    const ds = d.toISOString().split("T")[0].replace(/-/g, "");
+  const seenIds = new Set();
+  // Explicit dates for yesterday, today, and tomorrow — never the
+  // no-dates endpoint, which returned yesterday's slate for Nov 1.
+  for (let off = -daysBack; off <= 1; off++) {
+    const ds = ptDateParts(off);
     try {
       const resp = await fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=${ds}&limit=50`, { cache: "no-store" });
-      if (resp.ok) { const d = await resp.json(); for (const ev of (d.events||[])) { if (!seenIds.has(ev.id)) { events.push(ev); seenIds.add(ev.id); } } }
+      if (resp.ok) { const d = await resp.json(); for (const ev of (d.events || [])) { if (!seenIds.has(ev.id)) { events.push(ev); seenIds.add(ev.id); } } }
     } catch {}
   }
-  // Tomorrow
-  const tm = new Date(); tm.setDate(tm.getDate() + 1);
-  const ts = tm.toISOString().split("T")[0].replace(/-/g, "");
-  try {
-    const resp = await fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=${ts}&limit=50`, { cache: "no-store" });
-    if (resp.ok) { const d = await resp.json(); for (const ev of (d.events||[])) { if (!seenIds.has(ev.id)) { events.push(ev); seenIds.add(ev.id); } } }
-  } catch {}
   return events;
 }
 

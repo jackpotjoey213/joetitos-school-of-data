@@ -175,6 +175,57 @@ function Tracker({ history, sport, trackerAvailable }) {
 // Mockup row layout (Oct 31, 2026): one small row per bet, % (or grade)
 // on the right — the layout Joey approved in the mockups, replacing the
 // single large wrapped pick line. Model % only, no market-implied %.
+
+// ATS tracker fix (Nov 1, 2026): ONE source of truth for final grading.
+// Cards and the tracker both use this helper, with the same inputs
+// (stored lock + current refresh adj). Previously the card graded live
+// from the lock + current spread, while the tracker log was built from a
+// separate history record created at final time — so PHI and HOU showed
+// ATS ✓ on their cards but "Can't grade" in the log, and the panel
+// counted ATS 1-0 instead of the cards' 3-0. This helper is the card
+// grade; the tracker merge below reuses it verbatim.
+function finalGradeForGame(game, adj, sport) {
+  const storedLocked = (() => { try { return getLocked(sport)[game.espnId || game.id] || null; } catch { return null; } })();
+  const lockedRecord = adj.lockedPrediction || storedLocked;
+  if (!lockedRecord) return { lockedRecord: null, effCons: null, effSpreadOdds: null, effTotalLine: null, effMlOdds: null, spreadCorrected: false, spreadCorrectionLabel: null, totalPct: null, spreadPct: null, mlPickPct: null, homeWinPct: null, awayWinPct: null, finalGrades: null };
+  const rawEffCons = lockedRecord.consensus || adj.consensus;
+  const effTotalLine = lockedRecord.line > 0 ? lockedRecord.line : (adj.oddsTotal && adj.oddsTotal > 0 ? adj.oddsTotal : (game.total && game.total > 0 ? game.total : null));
+  const effSpreadOdds = lockedRecord.spreadOdds || adj.oddsSpread || null;
+  const effMlOdds = lockedRecord.mlOdds || adj.oddsML || null;
+  let effCons = rawEffCons, spreadCorrected = false, spreadCorrectionLabel = null;
+  if (rawEffCons?.modelSpread != null && rawEffCons?.spreadCall && effSpreadOdds) {
+    const mkt = marketMarginHome(effSpreadOdds, game.homeAbbr);
+    if (mkt != null) {
+      const diff = rawEffCons.modelSpread - mkt;
+      const corrected = Math.abs(diff) >= 2 ? (rawEffCons.modelSpread > mkt ? game.homeAbbr : game.awayAbbr) : null;
+      if (corrected && corrected !== rawEffCons.spreadCall) {
+        effCons = { ...rawEffCons, spreadCall: corrected }; spreadCorrected = true;
+        spreadCorrectionLabel = lockedRecord.spreadOdds
+          ? "Spread pick corrected for the home-favorite bug (locked model score and lines unchanged)."
+          : "Spread pick corrected using current market line (original lock did not save a spread line).";
+      }
+    }
+  }
+  const noPick = adj.consensus?.noPick;
+  const pcts = effCons && !noPick ? perBetPcts(effCons, sport, effTotalLine, effSpreadOdds, game.homeAbbr, game.awayAbbr) : { totalPct: null, spreadPct: null, mlPct: null, homeWinPct: null, awayWinPct: null };
+  const totalPct = lockedRecord.totalPct ?? pcts.totalPct;
+  const spreadPct = spreadCorrected ? pcts.spreadPct : (lockedRecord.spreadPct ?? pcts.spreadPct);
+  const mlPickPct = lockedRecord.mlPct ?? pcts.mlPct;
+  let finalGrades = null;
+  if (game.status === "final" && effCons && game.liveScore) {
+    const at = game.liveScore.away + game.liveScore.home;
+    const mHome = game.liveScore.home - game.liveScore.away;
+    const winner = game.liveScore.away > game.liveScore.home ? game.awayAbbr : game.liveScore.home > game.liveScore.away ? game.homeAbbr : null;
+    finalGrades = {
+      actualTotal: at, actualMarginHome: mHome, actualWinner: winner,
+      total: gradeTotal(at, lockedRecord.line, effCons.totalCall),
+      spread: gradeSpread(mHome, effSpreadOdds, effCons.spreadCall, game.homeAbbr, game.awayAbbr),
+      ml: gradeML(winner, effCons.moneylinePick),
+    };
+  }
+  return { lockedRecord, effCons, effSpreadOdds, effTotalLine, effMlOdds, spreadCorrected, spreadCorrectionLabel, totalPct, spreadPct, mlPickPct, homeWinPct: pcts.homeWinPct, awayWinPct: pcts.awayWinPct, finalGrades };
+}
+
 function PickRow({ label, pick, detail, pct, grade, gradeColor }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 9, background: "#0f0f1a", border: "1px solid #2a2a3a", borderRadius: 9, padding: "8px 10px", marginBottom: 6 }}>
@@ -379,7 +430,7 @@ export default function Predictor() {
         } catch { /* lock repair is best-effort; display correction still applies */ }
         if (u.status === "final" && u.awayScore != null && u.homeScore != null) {
           const lockedPred = getLocked(sport)[lockKey];
-          if (lockedPred && lockedPred.line > 0 && !history.find((h) => h.gameId === String(lockKey) && h.sport === sport)) {
+          if (lockedPred && lockedPred.line > 0) {
             const at = u.awayScore + u.homeScore;
             const actualMarginHome = u.homeScore - u.awayScore;
             const predTotal = lockedPred.modelTotal || ((lockedPred.predAway || 0) + (lockedPred.predHome || 0));
@@ -389,19 +440,23 @@ export default function Predictor() {
             // not by winner alone. Old locks without a spread line grade
             // ATS as null (can't grade), never as a guessed win/loss.
             const tGrade = gradeTotal(at, lockedPred.line, lockedPred.totalCall);
-            const sGrade = gradeSpread(actualMarginHome, lockedPred.spreadOdds || null, lockedPred.spreadCall, g.homeAbbr, g.awayAbbr);
+            const sGrade = gradeSpread(actualMarginHome, lockedPred.spreadOdds || u.oddsSpread || null, lockedPred.spreadCall, g.homeAbbr, g.awayAbbr);
             const mlGrade = gradeML(actualWinner === "draw" ? null : actualWinner, lockedPred.moneylinePick);
             const rec = {
               gameId: String(lockKey), sport, away: g.awayAbbr, home: g.homeAbbr,
               predictedTotal: predTotal || 0, actualTotal: at, totalCall: lockedPred.totalCall, line: lockedPred.line,
               totalCorrect: tGrade, spreadCorrect: sGrade, moneylineCorrect: mlGrade,
               spreadCall: lockedPred.spreadCall || null, moneylinePick: lockedPred.moneylinePick || null,
-              spreadOdds: lockedPred.spreadOdds || null, mlOdds: lockedPred.mlOdds || null,
+              spreadOdds: lockedPred.spreadOdds || u.oddsSpread || null, mlOdds: lockedPred.mlOdds || null,
               totalPct: lockedPred.totalPct ?? null, spreadPct: lockedPred.spreadPct ?? null, mlPct: lockedPred.mlPct ?? null,
               actualMarginHome, actualWinner,
               totalError: at - (predTotal || at), date: g.startTime ? ptDateFromIso(g.startTime) : ptDateStr(0),
             };
-            setHistory((prev) => [...prev, rec]);
+            setHistory((prev) => {
+              const idx = prev.findIndex((h) => h.gameId === String(lockKey) && h.sport === sport);
+              if (idx >= 0) { const copy = [...prev]; copy[idx] = { ...copy[idx], ...rec }; return copy; }
+              return [...prev, rec];
+            });
             // Server ledger (existing columns only): pushes are sent as
             // null so a boolean column is never given a non-boolean.
             // Note: the Supabase predictions table still needs
@@ -461,6 +516,36 @@ export default function Predictor() {
     setPropsLoading((p) => ({ ...p, [key]: false }));
   };
 
+  // Tracker = card grades, not a separate history record. For every final
+  // game with a lock, the tracker record is built from finalGradeForGame
+  // (the same grade the card shows), overwriting any stale history record
+  // (e.g. PHI/HOU "Can't grade" records created before the spread line
+  // was repaired). Games without a final card grade keep their history
+  // record, so nothing already graded is lost.
+  const trackerHistory = (() => {
+    const byKey = new Map();
+    for (const h of history) byKey.set(String(h.gameId) + ":" + h.sport, { ...h });
+    for (const game of games) {
+      if (game.status !== "final" || !game.liveScore) continue;
+      const fg = finalGradeForGame(game, liveAdj[game.id] || {}, sport);
+      if (!fg.lockedRecord || !fg.finalGrades || !fg.effCons) continue;
+      const key = String(game.espnId || game.id) + ":" + sport;
+      const predTotal = fg.effCons.modelTotal || ((fg.lockedRecord.predAway || 0) + (fg.lockedRecord.predHome || 0));
+      byKey.set(key, {
+        ...(byKey.get(key) || {}),
+        gameId: String(game.espnId || game.id), sport, away: game.awayAbbr, home: game.homeAbbr,
+        predictedTotal: predTotal, actualTotal: fg.finalGrades.actualTotal, totalCall: fg.effCons.totalCall, line: fg.lockedRecord.line,
+        totalCorrect: fg.finalGrades.total, spreadCorrect: fg.finalGrades.spread, moneylineCorrect: fg.finalGrades.ml,
+        spreadCall: fg.effCons.spreadCall || null, moneylinePick: fg.effCons.moneylinePick || null,
+        spreadOdds: fg.effSpreadOdds, mlOdds: fg.effMlOdds,
+        totalPct: fg.totalPct, spreadPct: fg.spreadPct, mlPct: fg.mlPickPct,
+        actualMarginHome: fg.finalGrades.actualMarginHome, actualWinner: fg.finalGrades.actualWinner,
+        totalError: fg.finalGrades.actualTotal - predTotal,
+        date: game.startTime ? ptDateFromIso(game.startTime) : ptDateStr(0),
+      });
+    }
+    return [...byKey.values()];
+  })();
   const visibleGames = filter === "all" ? games : filter === "live" ? games.filter((g) => g.status === "live") : filter === "completed" ? games.filter((g) => g.status === "final") : games.filter((g) => g.status === "scheduled" || g.status === "live");
   const liveCount = games.filter((g) => g.status === "live").length;
   const finalCount = games.filter((g) => g.status === "final").length;
@@ -489,7 +574,7 @@ export default function Predictor() {
           <button key={k} onClick={() => setFilter(k)} style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid #334155", background: filter === k ? "#6366f1" : "#1e293b", color: "#fff", fontSize: 11, cursor: "pointer" }}>{l}</button>
         ))}
       </div>
-      <Tracker history={history} sport={sport} trackerAvailable={trackerAvailable} />
+      <Tracker history={trackerHistory} sport={sport} trackerAvailable={trackerAvailable} />
       <ParlayBuilder legs={legs} setLegs={setLegs} />
       <div style={{ margin: "0 12px 10px", fontSize: 11, color: "#94a3b8", textAlign: "center" }}>{log}</div>
       {visibleGames.map((game) => {
@@ -523,53 +608,19 @@ export default function Predictor() {
         // and "O/U: UNDER vs ?". A lock stored in this browser is used
         // even before a refresh, so a final card is not blank on load.
         // If no lock exists, the card says so plainly — no "?", no 0s.
-        const storedLocked = (() => { try { return getLocked(sport)[game.espnId || game.id] || null; } catch { return null; } })();
-        const lockedRecord = adj.lockedPrediction || storedLocked;
-        const rawEffCons = lockedRecord?.consensus || cons;
-        const effTotalLine = lockedRecord?.line > 0 ? lockedRecord.line : (adj.oddsTotal && adj.oddsTotal > 0 ? adj.oddsTotal : (game.total && game.total > 0 ? game.total : null));
-        const effSpreadOdds = lockedRecord?.spreadOdds || adj.oddsSpread || null;
-        const effMlOdds = lockedRecord?.mlOdds || adj.oddsML || null;
-        // Display-time correction for locks created with the buggy NBA
-        // spread logic (Oct 31, 2026): the locked model score and total
-        // line are unchanged, but a spread pick derived incorrectly from
-        // them is corrected here, so an already-locked game does not keep
-        // showing a <50% "pick". First tries the spread line stored in
-        // the lock; if the lock predates spread-line saving (the reason
-        // the Oct 31 SA card stayed at SA 24% after the first fix), it
-        // falls back to the current market spread shown on the card,
-        // labeled as such — it does not pretend that was the lock line.
-        let effCons = rawEffCons, spreadCorrected = false, spreadCorrectionLabel = null;
-        if (rawEffCons?.modelSpread != null && rawEffCons?.spreadCall && effSpreadOdds) {
-          const mkt = marketMarginHome(effSpreadOdds, game.homeAbbr);
-          if (mkt != null) {
-            const diff = rawEffCons.modelSpread - mkt;
-            const corrected = Math.abs(diff) >= 2 ? (rawEffCons.modelSpread > mkt ? game.homeAbbr : game.awayAbbr) : null;
-            if (corrected && corrected !== rawEffCons.spreadCall) {
-              effCons = { ...rawEffCons, spreadCall: corrected }; spreadCorrected = true;
-              spreadCorrectionLabel = lockedRecord?.spreadOdds
-                ? "Spread pick corrected for the home-favorite bug (locked model score and lines unchanged)."
-                : "Spread pick corrected using current market line (original lock did not save a spread line).";
-            }
-          }
-        }
-        const pcts = effCons && !noPick ? perBetPcts(effCons, sport, effTotalLine, effSpreadOdds, game.homeAbbr, game.awayAbbr) : { totalPct: null, spreadPct: null, mlPct: null, homeWinPct: null, awayWinPct: null };
-        const totalPct = lockedRecord?.totalPct ?? pcts.totalPct;
-        const spreadPct = spreadCorrected ? pcts.spreadPct : (lockedRecord?.spreadPct ?? pcts.spreadPct);
-        const mlPickPct = lockedRecord?.mlPct ?? pcts.mlPct;
-        const homeWinPct = pcts.homeWinPct, awayWinPct = pcts.awayWinPct;
-        // Final-game grading, computed from the locked record + final score.
-        let finalGrades = null;
-        if (isFinal && lockedRecord && effCons && game.liveScore) {
-          const at = game.liveScore.away + game.liveScore.home;
-          const mHome = game.liveScore.home - game.liveScore.away;
-          const winner = game.liveScore.away > game.liveScore.home ? game.awayAbbr : game.liveScore.home > game.liveScore.away ? game.homeAbbr : null;
-          finalGrades = {
-            actualTotal: at, actualMarginHome: mHome, actualWinner: winner,
-            total: gradeTotal(at, lockedRecord.line, effCons.totalCall),
-            spread: gradeSpread(mHome, effSpreadOdds, effCons.spreadCall, game.homeAbbr, game.awayAbbr),
-            ml: gradeML(winner, effCons.moneylinePick),
-          };
-        }
+        const fg = finalGradeForGame(game, adj, sport);
+        const lockedRecord = fg.lockedRecord;
+        const effCons = fg.effCons;
+        const effSpreadOdds = fg.effSpreadOdds;
+        const effTotalLine = fg.effTotalLine;
+        const effMlOdds = fg.effMlOdds;
+        const spreadCorrected = fg.spreadCorrected;
+        const spreadCorrectionLabel = fg.spreadCorrectionLabel;
+        const totalPct = fg.totalPct;
+        const spreadPct = fg.spreadPct;
+        const mlPickPct = fg.mlPickPct;
+        const homeWinPct = fg.homeWinPct, awayWinPct = fg.awayWinPct;
+        const finalGrades = fg.finalGrades;
         return (
           <div key={game.id} style={{ margin: "0 12px 12px", padding: 12, borderRadius: 12, background: "#15151f", border: "1px solid #2a2a3a" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
