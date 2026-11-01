@@ -209,7 +209,13 @@ function finalGradeForGame(game, adj, sport) {
   const noPick = adj.consensus?.noPick;
   const pcts = effCons && !noPick ? perBetPcts(effCons, sport, effTotalLine, effSpreadOdds, game.homeAbbr, game.awayAbbr) : { totalPct: null, spreadPct: null, mlPct: null, homeWinPct: null, awayWinPct: null };
   const totalPct = lockedRecord.totalPct ?? pcts.totalPct;
-  const spreadPct = spreadCorrected ? pcts.spreadPct : (lockedRecord.spreadPct ?? pcts.spreadPct);
+  const spreadPctRaw = spreadCorrected ? pcts.spreadPct : (lockedRecord.spreadPct ?? pcts.spreadPct);
+  // A spread pick below 50% is a desync between the locked pick and the
+  // current model/market — never present it as a pick. Keep the original
+  // pick for final grading (finalGrades uses effCons.spreadCall), but
+  // mark it invalid for upcoming display.
+  const spreadPickValid = spreadPctRaw == null || spreadPctRaw >= 50;
+  const spreadPct = spreadPickValid ? spreadPctRaw : null;
   const mlPickPct = lockedRecord.mlPct ?? pcts.mlPct;
   let finalGrades = null;
   if (game.status === "final" && effCons && game.liveScore) {
@@ -223,7 +229,7 @@ function finalGradeForGame(game, adj, sport) {
       ml: gradeML(winner, effCons.moneylinePick),
     };
   }
-  return { lockedRecord, effCons, effSpreadOdds, effTotalLine, effMlOdds, spreadCorrected, spreadCorrectionLabel, totalPct, spreadPct, mlPickPct, homeWinPct: pcts.homeWinPct, awayWinPct: pcts.awayWinPct, finalGrades };
+  return { lockedRecord, effCons, effSpreadOdds, effTotalLine, effMlOdds, spreadCorrected, spreadCorrectionLabel, totalPct, spreadPct, spreadPickValid, mlPickPct, homeWinPct: pcts.homeWinPct, awayWinPct: pcts.awayWinPct, finalGrades };
 }
 
 function PickRow({ label, pick, detail, pct, grade, gradeColor }) {
@@ -618,6 +624,7 @@ export default function Predictor() {
         const spreadCorrectionLabel = fg.spreadCorrectionLabel;
         const totalPct = fg.totalPct;
         const spreadPct = fg.spreadPct;
+        const spreadPickValid = fg.spreadPickValid;
         const mlPickPct = fg.mlPickPct;
         const homeWinPct = fg.homeWinPct, awayWinPct = fg.awayWinPct;
         const finalGrades = fg.finalGrades;
@@ -653,7 +660,7 @@ export default function Predictor() {
                 <div style={{ fontSize: 11, color: "#94a3b8", textAlign: "center" }}>Model: {effCons.awayPts ?? "?"} - {effCons.homePts ?? "?"} • Total {effCons.modelTotal}</div>
                 <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, color: "#94a3b8", margin: "10px 0 6px" }}>MODEL PICKS — MODEL % ONLY</div>
                 <PickRow label="OVER / UNDER" pick={effCons.totalCall ? `Take ${effCons.totalCall} ${effTotalLine || ""}` : "—"} detail={effCons.modelTotal != null && effTotalLine ? `Model total ${effCons.modelTotal} vs line ${effTotalLine}` : null} pct={totalPct} />
-                <PickRow label="SPREAD (ATS)" pick={effCons.spreadCall ? `Take ${spreadDisplay(effCons.spreadCall, effSpreadOdds)}` : "—"} detail={effCons.modelSpread != null && effSpreadOdds ? `Model margin ${effCons.modelSpread > 0 ? `${game.homeAbbr} +${effCons.modelSpread}` : `${game.awayAbbr} +${Math.abs(effCons.modelSpread)}`} vs market ${effSpreadOdds.fav} ${effSpreadOdds.line}` : null} pct={spreadPct} />
+                <PickRow label="SPREAD (ATS)" pick={effCons.spreadCall && spreadPickValid ? `Take ${spreadDisplay(effCons.spreadCall, effSpreadOdds)}` : "—"} detail={effCons.modelSpread != null && effSpreadOdds ? (spreadPickValid ? `Model margin ${effCons.modelSpread > 0 ? `${game.homeAbbr} +${effCons.modelSpread}` : `${game.awayAbbr} +${Math.abs(effCons.modelSpread)}`} vs market ${effSpreadOdds.fav} ${effSpreadOdds.line}` : `No spread pick — locked pick no longer covers at 50%+ (model margin ${effCons.modelSpread > 0 ? `${game.homeAbbr} +${effCons.modelSpread}` : `${game.awayAbbr} +${Math.abs(effCons.modelSpread)}`} vs market ${effSpreadOdds.fav} ${effSpreadOdds.line})`) : null} pct={spreadPct} />
                 <PickRow label="MONEYLINE" pick={effCons.moneylinePick ? `Take ${effCons.moneylinePick} to win` : "No moneyline pick"} detail={(homeWinPct != null && awayWinPct != null) ? `${game.awayAbbr} ${awayWinPct}% to win • ${game.homeAbbr} ${homeWinPct}% to win` : null} pct={mlPickPct} />
                 {spreadCorrected && <div style={{ fontSize: 10, color: "#f59e0b", marginTop: 2 }}>{spreadCorrectionLabel}</div>}
                 {locked && <div style={{ fontSize: 10, color: "#22c55e", textAlign: "center" }}>🔒 Pregame pick locked (line {locked.line}) — this is the pick that will be graded.</div>}
