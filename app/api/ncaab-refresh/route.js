@@ -57,7 +57,14 @@ async function fetchCBBTeamStats() {
         const name = (entry.team?.displayName || "").toLowerCase();
         const short = (entry.team?.shortDisplayName || "").toLowerCase();
         const stats = {};
-        for (const s of (entry.stats || [])) { stats[s.name] = parseFloat(s.value) || 0; }
+        // CBB standings trap (Nov 1, 2026): each entry's stats array
+        // repeats the same names for every split — overall first, then
+        // home_, road_, vsaprankedteams_, vsconf_, etc., each with a
+        // different type. A plain overwrite loop ends on the LAST split
+        // (conference, 0-0 in early November for almost everyone),
+        // zeroing real overall stats and yielding 0 entries. First
+        // occurrence wins: the overall block is first, so it is kept.
+        for (const s of (entry.stats || [])) { if (stats[s.name] === undefined) stats[s.name] = parseFloat(s.value) || 0; }
         const w = stats.wins || 0, l = stats.losses || 0, gp = w + l || 1;
         // Totals take priority; per-game averages are the fallback.
         // No league-average fallback here: a team with neither is
@@ -461,7 +468,7 @@ export async function POST(req) {
       oddsTotal: odds?.total||null,
       oddsML: (odds?.awayML||odds?.homeML)?{away:odds.awayML||0,home:odds.homeML||0}:null,
       consensus: (!odds?.total ? { ...pred.consensus, noPick: true, noPickReason: 'No Odds line', totalCall: null } : pred.consensus),
-      isNewPrediction: status === "scheduled" || status === undefined,
+      isNewPrediction: (status === "scheduled" || status === undefined) && pred.consensus && !pred.consensus.noPick,
       injuries: null
     };
   });

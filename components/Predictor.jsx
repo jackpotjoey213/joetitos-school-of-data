@@ -618,9 +618,13 @@ export default function Predictor() {
         const fg = finalGradeForGame(game, adj, sport);
         const lockedRecord = fg.lockedRecord;
         const effCons = fg.effCons;
-        const effSpreadOdds = fg.effSpreadOdds;
-        const effTotalLine = fg.effTotalLine;
-        const effMlOdds = fg.effMlOdds;
+        // Upcoming cards without a lock (e.g. CBB before stats exist)
+        // should still show CURRENT market lines from the refresh,
+        // not dashes — final cards keep the locked-line rule so a final
+        // game's empty current market is never shown as a line.
+        const effSpreadOdds = fg.effSpreadOdds || (!isFinal ? adj.oddsSpread : null);
+        const effTotalLine = fg.effTotalLine || (!isFinal ? adj.oddsTotal : null);
+        const effMlOdds = fg.effMlOdds || (!isFinal ? adj.oddsML : null);
         const spreadCorrected = fg.spreadCorrected;
         const spreadCorrectionLabel = fg.spreadCorrectionLabel;
         const totalPct = fg.totalPct;
