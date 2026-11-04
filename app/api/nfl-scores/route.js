@@ -25,16 +25,10 @@ async function fetchESPNNFL(daysBack = 1) {
   const tm = new Date(); tm.setDate(tm.getDate() + 1);
   urls.push(`https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?dates=${tm.toISOString().split("T")[0].replace(/-/g, "")}&limit=100`);
   const seen = new Set();
-  for (const u of urls) {
-    try {
-      const resp = await fetch(u, { cache: "no-store" });
-      if (!resp.ok) continue;
-      const d = await resp.json();
-      for (const ev of (d.events || [])) {
-        if (!seen.has(ev.id)) { seen.add(ev.id); events.push(ev); }
-      }
-    } catch {}
-  }
+  const results = await Promise.all(urls.map(async (u) => {
+    try { const resp = await fetch(u, { cache: "no-store" }); return resp.ok ? (await resp.json()).events || [] : []; } catch { return []; }
+  }));
+  for (const evList of results) for (const ev of evList) { if (!seen.has(ev.id)) { seen.add(ev.id); events.push(ev); } }
   return events;
 }
 

@@ -102,7 +102,7 @@ function Tracker({ history, sport, trackerAvailable }) {
   const filteredAll = history.filter((h) => h.sport === sport);
   let filtered = filteredAll;
   if (window === "yesterday") filtered = filteredAll.filter((h) => h.date === ptDateStr(-1));
-  else if (window === "7d") filtered = filteredAll.filter((h) => h.date >= ptDateStr(-7) && h.date <= ptDateStr(0));
+  else if (window === "7d") filtered = filteredAll.filter((h) => h.date >= ptDateStr(-6) && h.date <= ptDateStr(0)); // 7 days incl. today
   const n = filtered.length;
   const calc = (key) => {
     const graded = filtered.filter((h) => h[key] === true || h[key] === false);
@@ -333,6 +333,7 @@ export default function Predictor() {
   const [sources, setSources] = useState(null);
   const [log, setLog] = useState("Loading games...");
   const [propsByGame, setPropsByGame] = useState({});
+  const [trackerGames, setTrackerGames] = useState([]);
   const [propsLoading, setPropsLoading] = useState({});
   const [legs, setLegs] = useState([]);
   const refreshedSports = useRef(new Set());
@@ -367,6 +368,26 @@ export default function Predictor() {
       setGames(data.games || []);
       setLog(data.games?.length ? `${data.games.length} games loaded` : "No games found");
     } catch (e) { setLog("Error loading games: " + e.message); }
+  }, []);
+
+  // Tracker window fix (Nov 4, 2026): the render list only covers
+  // yesterday/today/tomorrow (days=1), so the tracker could only ever
+  // grade finals in that 3-day window — Last 7 Days was really Last
+  // 1 Day, and a day with no games (e.g. no NBA games yesterday) left
+  // it empty even though older games existed. This separate fetch
+  // covers the last 7 days for TRACKING ONLY: it never replaces the
+  // render list and never feeds the refresh route, so it cannot slow
+  // down picks or bloat the cards. Past finals do not change, so one
+  // fetch per league switch is enough; current-window finals are
+  // still graded from the render list below (with live refresh data).
+  const loadTrackerGames = useCallback(async (sp) => {
+    setTrackerGames([]);
+    try {
+      const endpoint = sp === "nfl" ? "/api/nfl-scores?days=7" : sp === "ncaab" ? "/api/ncaab-scores?days=7" : "/api/nba-scores?days=7";
+      const resp = await fetch(endpoint);
+      const data = await resp.json();
+      setTrackerGames((data.games || []).filter((g) => g.status === "final" && g.liveScore));
+    } catch { setTrackerGames([]); }
   }, []);
 
   const handleRefresh = useCallback(async () => {
@@ -483,7 +504,7 @@ export default function Predictor() {
   const handleRefreshRef = useRef();
   handleRefreshRef.current = handleRefresh;
   useEffect(() => { loadHistory(); }, [loadHistory]);
-  useEffect(() => { refreshedSports.current = new Set(); setExpandedId(null); setPropsByGame({}); loadGames(sport); }, [sport, loadGames]);
+  useEffect(() => { refreshedSports.current = new Set(); setExpandedId(null); setPropsByGame({}); loadGames(sport); loadTrackerGames(sport); }, [sport, loadGames, loadTrackerGames]);
   useEffect(() => {
     // ROOT CAUSE of the preview dashes (found Oct 29, 2026):
     // On a sport switch, this effect used to run once with the OLD
@@ -531,9 +552,22 @@ export default function Predictor() {
   const trackerHistory = (() => {
     const byKey = new Map();
     for (const h of history) byKey.set(String(h.gameId) + ":" + h.sport, { ...h });
-    for (const game of games) {
-      if (game.status !== "final" || !game.liveScore) continue;
-      const fg = finalGradeForGame(game, liveAdj[game.id] || {}, sport);
+    // Merge order matters: tracker-only finals first (adj = {}, so they
+    // grade purely from the stored lock keyed by espnId), then current
+    // render-list finals overwrite them with refresh-updated scores.
+    // liveAdj is keyed by the render list's sequential ids, so it is
+    // NEVER looked up by a tracker game's own id — that would collide
+    // with a different render-list game sharing the same sequential id.
+    const trackerFinals = trackerGames.filter((g) => g.status === "final" && g.liveScore);
+    const gradedGames = [
+      ...trackerFinals.map((game) => [game, {}]),
+      ...games.filter((g) => g.status === "final" && g.liveScore).map((game) => [game, liveAdj[game.id] || {}]),
+    ];
+    // byKey.set in loop order keeps the LAST occurrence per espnId,
+    // so the render-list version (with refresh scores) wins over the
+    // tracker-only version for the same game.
+    for (const [game, adj] of gradedGames) {
+      const fg = finalGradeForGame(game, adj, sport);
       if (!fg.lockedRecord || !fg.finalGrades || !fg.effCons) continue;
       const key = String(game.espnId || game.id) + ":" + sport;
       const predTotal = fg.effCons.modelTotal || ((fg.lockedRecord.predAway || 0) + (fg.lockedRecord.predHome || 0));

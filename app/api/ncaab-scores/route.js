@@ -14,13 +14,17 @@ async function fetchESPNCBB(daysBack = 1) {
   const seenIds = new Set();
   // Explicit dates for yesterday, today, and tomorrow — never the
   // no-dates endpoint, which returned yesterday's slate for Nov 1.
-  for (let off = -daysBack; off <= 1; off++) {
-    const ds = ptDateParts(off);
+  // Parallel date fetches (Nov 4, 2026): the tracker now asks for 7
+  // days back, and 9 sequential ESPN fetches could time out on Vercel.
+  // Promise.all keeps result order (chronological), dedupe still applies.
+  const offsets = []; for (let off = -daysBack; off <= 1; off++) offsets.push(off);
+  const results = await Promise.all(offsets.map(async (off) => {
     try {
-      const resp = await fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard?dates=${ds}&limit=200`, { cache: "no-store" });
-      if (resp.ok) { const d = await resp.json(); for (const ev of (d.events || [])) { if (!seenIds.has(ev.id)) { events.push(ev); seenIds.add(ev.id); } } }
-    } catch {}
-  }
+      const resp = await fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard?dates=${ptDateParts(off)}&limit=200`, { cache: "no-store" });
+      return resp.ok ? (await resp.json()).events || [] : [];
+    } catch { return []; }
+  }));
+  for (const evList of results) for (const ev of evList) { if (!seenIds.has(ev.id)) { events.push(ev); seenIds.add(ev.id); } }
   return events;
 }
 
