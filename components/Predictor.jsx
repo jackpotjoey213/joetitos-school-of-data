@@ -483,7 +483,7 @@ export default function Predictor() {
   const handleRefreshRef = useRef();
   handleRefreshRef.current = handleRefresh;
   useEffect(() => { loadHistory(); }, [loadHistory]);
-  useEffect(() => { refreshedSports.current = new Set(); loadGames(sport); }, [sport, loadGames]);
+  useEffect(() => { refreshedSports.current = new Set(); setExpandedId(null); setPropsByGame({}); loadGames(sport); }, [sport, loadGames]);
   useEffect(() => {
     // ROOT CAUSE of the preview dashes (found Oct 29, 2026):
     // On a sport switch, this effect used to run once with the OLD
@@ -600,7 +600,7 @@ export default function Predictor() {
             const mins = parseClockMinutes(game.liveScore?.clock);
             const period = game.liveScore?.period;
             if (period == null || mins == null) liveReason = "Clock/period unavailable — live projection unavailable";
-            else if (period > 4) liveReason = "Overtime — no live pick";
+            else if ((sport === "ncaab" && period > 2) || (sport !== "ncaab" && period > 4)) liveReason = "Overtime — no live pick";
             else {
               liveProj = buildLiveProjection({ pregame: { awayPts: lockedCons.awayPts, homePts: lockedCons.homePts, modelTotal: lockedCons.modelTotal }, awayScore: game.liveScore.away, homeScore: game.liveScore.home, period, minutesRemainingInPeriod: mins, totalMinutes: sport === "nba" ? 48 : sport === "ncaab" ? 40 : 60, sport });
               if (!liveProj) liveReason = "Live projection unavailable";
@@ -647,6 +647,7 @@ export default function Predictor() {
               </div>
             </div>
             {isFinal && !lockedRecord && <div style={{ marginTop: 8, padding: "8px 10px", borderRadius: 8, background: "#1e293b", border: "1px solid #334155", color: "#cbd5e1", fontSize: 12, fontWeight: 700 }}>No prediction was locked for this game — can't grade it.</div>}
+            {isFinal && lockedRecord && !finalGrades && <div style={{ marginTop: 8, padding: "8px 10px", borderRadius: 8, background: "#f59e0b22", border: "1px solid #f59e0b55", color: "#fbbf24", fontSize: 12, fontWeight: 700 }}>Prediction was locked{lockedRecord.line ? ` (line ${lockedRecord.line})` : ""} but final grading is unavailable in this load — final score data is missing. Hit Refresh to re-grade.</div>}
             {isFinal && lockedRecord && finalGrades && (
               <div style={{ marginTop: 10 }}>
                 <div style={{ fontSize: 11, color: "#94a3b8", textAlign: "center" }}>Locked: {effCons.awayPts ?? "?"} - {effCons.homePts ?? "?"} • Model total {effCons.modelTotal} • Line {lockedRecord.line} • Actual total {finalGrades.actualTotal} • {finalGrades.actualWinner ? `${finalGrades.actualWinner} won` : "Tie"}</div>
@@ -660,7 +661,7 @@ export default function Predictor() {
               </div>
             )}
             {noPick && !isFinal && <div style={{ marginTop: 8, padding: "8px 10px", borderRadius: 8, background: "#f59e0b22", border: "1px solid #f59e0b55", color: "#fbbf24", fontSize: 11, fontWeight: 700 }}>⚠️ {cons.noPickReason || "Data unavailable"} — no pick locked for this game. The game is shown, not hidden, and no fake line is used.</div>}
-            {!isFinal && cons && !noPick && (
+            {!isFinal && cons && effCons && !noPick && (
               <div style={{ marginTop: 10 }}>
                 <div style={{ fontSize: 11, color: "#94a3b8", textAlign: "center" }}>Model: {effCons.awayPts ?? "?"} - {effCons.homePts ?? "?"} • Total {effCons.modelTotal}</div>
                 <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, color: "#94a3b8", margin: "10px 0 6px" }}>MODEL PICKS — MODEL % ONLY</div>

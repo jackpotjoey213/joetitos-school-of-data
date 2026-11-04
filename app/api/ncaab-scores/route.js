@@ -61,7 +61,8 @@ function parseCBBEvent(ev, idx) {
     liveScore: (status === "live" || status === "final") ? {
       away: parseInt(away.score) || 0,
       home: parseInt(home.score) || 0,
-      clock: ev.status?.type?.shortDetail || ""
+      clock: ev.status?.displayClock || ev.status?.type?.shortDetail || "",
+      period: ev.status?.period ?? ev.competitions?.[0]?.status?.period ?? null
     } : null,
     spread: { fav: home.team?.abbreviation?.toUpperCase() || "HME", line: 0 },
     total: 0,

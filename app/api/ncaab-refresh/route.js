@@ -454,14 +454,14 @@ export async function POST(req) {
     const odds = g.odds, status = g.status;
     const lockKey = g.espnId || g.id;
 
-    if (locked[lockKey]) return { id: g.id, espnId: g.espnId, status, sport: "ncaab", awayScore: g.liveScore?.away??null, homeScore: g.liveScore?.home??null, clock: g.liveScore?.clock||"", currentTotal: locked[lockKey].line||g.total, consensus: locked[lockKey].consensus||null, lockedPrediction: locked[lockKey], isNewPrediction: false, currentSpread: odds?.fav?`${odds.fav} -${odds.spread}`:null, oddsRange: odds?.range||null, numBooks: odds?.books||0, oddsSpread: odds?.fav?{fav:odds.fav,line:-odds.spread}:null, oddsTotal: odds?.total||null, oddsML: (odds?.awayML||odds?.homeML)?{away:odds.awayML,home:odds.homeML}:null, injuries: null };
-    if (status === "final") return { id: g.id, espnId: g.espnId, status, sport: "ncaab", awayScore: g.liveScore?.away??null, homeScore: g.liveScore?.home??null, clock: g.liveScore?.clock||"", currentTotal: odds?.total||g.total, currentSpread: odds?.fav?`${odds.fav} -${odds.spread}`:null, oddsRange: odds?.range||null, numBooks: odds?.books||0, oddsSpread: odds?.fav?{fav:odds.fav,line:-odds.spread}:null, oddsTotal: odds?.total||null, oddsML: (odds?.awayML||odds?.homeML)?{away:odds.awayML,home:odds.homeML}:null, consensus: null, lockedPrediction: null, noPregamePrediction: true, isNewPrediction: false, injuries: null };
+    if (locked[lockKey]) return { id: g.id, espnId: g.espnId, status, sport: "ncaab", awayScore: g.liveScore?.away??null, homeScore: g.liveScore?.home??null, clock: g.liveScore?.clock||"", period: g.liveScore?.period ?? null, currentTotal: locked[lockKey].line||g.total, consensus: locked[lockKey].consensus||null, lockedPrediction: locked[lockKey], isNewPrediction: false, currentSpread: odds?.fav?`${odds.fav} -${odds.spread}`:null, oddsRange: odds?.range||null, numBooks: odds?.books||0, oddsSpread: odds?.fav?{fav:odds.fav,line:-odds.spread}:null, oddsTotal: odds?.total||null, oddsML: (odds?.awayML||odds?.homeML)?{away:odds.awayML,home:odds.homeML}:null, injuries: null };
+    if (status === "final") return { id: g.id, espnId: g.espnId, status, sport: "ncaab", awayScore: g.liveScore?.away??null, homeScore: g.liveScore?.home??null, clock: g.liveScore?.clock||"", period: g.liveScore?.period ?? null, currentTotal: odds?.total||g.total, currentSpread: odds?.fav?`${odds.fav} -${odds.spread}`:null, oddsRange: odds?.range||null, numBooks: odds?.books||0, oddsSpread: odds?.fav?{fav:odds.fav,line:-odds.spread}:null, oddsTotal: odds?.total||null, oddsML: (odds?.awayML||odds?.homeML)?{away:odds.awayML,home:odds.homeML}:null, consensus: null, lockedPrediction: null, noPregamePrediction: true, isNewPrediction: false, injuries: null };
 
     const pred = buildCBBPrediction(g, odds, g.awayTeam, g.homeTeam, b2bInfo, playoffs);
     return {
       id: g.id, espnId: g.espnId, status, sport: "ncaab",
       awayScore: g.liveScore?.away??null, homeScore: g.liveScore?.home??null,
-      clock: g.liveScore?.clock||null, currentTotal: pred.currentTotal,
+      clock: g.liveScore?.clock||null, period: g.liveScore?.period ?? null, currentTotal: pred.currentTotal,
       currentSpread: odds?.fav?`${odds.fav} -${odds.spread}`:null,
       oddsRange: odds?.range||null, numBooks: odds?.books||0,
       oddsSpread: odds?.fav?{fav:odds.fav,line:-odds.spread}:null,
