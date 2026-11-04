@@ -56,6 +56,9 @@ function ptDateStr(offsetDays = 0) {
 function ptDateFromIso(iso) {
   try { return new Date(iso).toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" }); } catch { return ptDateStr(0); }
 }
+function formatLockTime(iso) {
+  try { return new Date(iso).toLocaleString("en-US", { timeZone: "America/Los_Angeles", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) + " PT"; } catch { return iso || ""; }
+}
 function marketMarginHome(spreadOdds, homeAbbr) {
   if (!spreadOdds || spreadOdds.fav == null || spreadOdds.line == null) return null;
   return spreadOdds.fav === homeAbbr ? -spreadOdds.line : spreadOdds.line;
@@ -667,6 +670,19 @@ export default function Predictor() {
         const mlPickPct = fg.mlPickPct;
         const homeWinPct = fg.homeWinPct, awayWinPct = fg.awayWinPct;
         const finalGrades = fg.finalGrades;
+        // Locked vs current (Nov 4, 2026, Celtics-Bucks case): the header
+        // shows the LOCKED line first (lockedRecord.spreadOdds/line/mlOdds),
+        // so a stale lock can look like the current market. Current market
+        // comes only from the latest refresh (adj.odds*), never from the
+        // lock, and grading still uses the locked line either way.
+        const lockTimeStr = lockedRecord?.lockedAt ? formatLockTime(lockedRecord.lockedAt) : null;
+        const curSpread = adj.oddsSpread || null, curTotal = adj.oddsTotal || null, curMl = adj.oddsML || null;
+        const lockedSpread = lockedRecord?.spreadOdds || null, lockedTotal = lockedRecord?.line || null, lockedMl = lockedRecord?.mlOdds || null;
+        const currentDiffers = !isFinal && lockedRecord && (curSpread || curTotal || curMl) && (
+          (curSpread && lockedSpread && (curSpread.fav !== lockedSpread.fav || curSpread.line !== lockedSpread.line)) ||
+          (curTotal && lockedTotal && curTotal !== lockedTotal) ||
+          (curMl && lockedMl && (curMl.away !== lockedMl.away || curMl.home !== lockedMl.home))
+        );
         return (
           <div key={game.id} style={{ margin: "0 12px 12px", padding: 12, borderRadius: 12, background: "#15151f", border: "1px solid #2a2a3a" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
@@ -703,7 +719,8 @@ export default function Predictor() {
                 <PickRow label="SPREAD (ATS)" pick={effCons.spreadCall && spreadPickValid ? `Take ${spreadDisplay(effCons.spreadCall, effSpreadOdds)}` : "—"} detail={effCons.modelSpread != null && effSpreadOdds ? (spreadPickValid ? `Model margin ${effCons.modelSpread > 0 ? `${game.homeAbbr} +${effCons.modelSpread}` : `${game.awayAbbr} +${Math.abs(effCons.modelSpread)}`} vs market ${effSpreadOdds.fav} ${effSpreadOdds.line}` : `No spread pick — spread edge is 50% or less (model margin ${effCons.modelSpread > 0 ? `${game.homeAbbr} +${effCons.modelSpread}` : `${game.awayAbbr} +${Math.abs(effCons.modelSpread)}`} vs market ${effSpreadOdds.fav} ${effSpreadOdds.line})`) : null} pct={spreadPct} />
                 <PickRow label="MONEYLINE" pick={effCons.moneylinePick ? `Take ${effCons.moneylinePick} to win` : "No moneyline pick"} detail={(homeWinPct != null && awayWinPct != null) ? `${game.awayAbbr} ${awayWinPct}% to win • ${game.homeAbbr} ${homeWinPct}% to win` : null} pct={mlPickPct} />
                 {spreadCorrected && <div style={{ fontSize: 10, color: "#f59e0b", marginTop: 2 }}>{spreadCorrectionLabel}</div>}
-                {locked && <div style={{ fontSize: 10, color: "#22c55e", textAlign: "center" }}>🔒 Pregame pick locked (line {locked.line}) — this is the pick that will be graded.</div>}
+                {lockedRecord && <div style={{ fontSize: 10, color: "#22c55e", textAlign: "center" }}>🔒 Pregame pick locked (line {lockedRecord.line}{lockTimeStr ? `, ${lockTimeStr}` : ""}) — this is the pick that will be graded.</div>}
+                {currentDiffers && <div style={{ fontSize: 11, color: "#f59e0b", textAlign: "center", marginTop: 4 }}>⚠️ Line moved since lock — Current market: Spread {curSpread ? `${curSpread.fav} ${curSpread.line}` : "—"} • O/U {curTotal || "—"} • ML {curMl ? `${game.awayAbbr} ${curMl.away || "—"} / ${game.homeAbbr} ${curMl.home || "—"}` : "—"} — grading still uses the locked line above.</div>}
                 {cons.reasons?.length > 0 && <div style={{ fontSize: 11, color: "#cbd5e1", marginTop: 6, textAlign: "center" }}>{cons.reasons.slice(0, 4).map((r, i) => <div key={i}>{r}</div>)}</div>}
                 {adj.oddsML && cons.moneylinePick && (
                   <button onClick={() => { const odds = cons.moneylinePick === game.homeAbbr ? adj.oddsML.home : adj.oddsML.away; if (odds) setLegs([...legs, { label: `${cons.moneylinePick} ML (${game.awayAbbr} @ ${game.homeAbbr})`, odds, gameId: String(game.espnId || game.id), prob: cons.moneylinePick === game.homeAbbr ? parseFloat(cons.homeWinProb) / 100 : parseFloat(cons.awayWinProb) / 100 }]); }} style={{ marginTop: 8, padding: "6px 10px", borderRadius: 8, background: "#a855f7", color: "#fff", border: "none", cursor: "pointer", fontSize: 11 }}>Add ML to parlay</button>
@@ -728,6 +745,14 @@ export default function Predictor() {
               <div style={{ marginTop: 8, fontSize: 11, color: "#cbd5e1" }}>
                 {cons?.dataSources?.map((s, i) => <div key={i}>• {s}</div>)}
                 {cons?.reasons?.map((r, i) => <div key={`r${i}`}>• {r}</div>)}
+                {(adj.oddsSpread || adj.oddsTotal || adj.oddsML) && (
+                  <div style={{ marginTop: 10 }}>
+                    <b>Current market (latest refresh)</b>
+                    <div>Spread: {adj.oddsSpread ? `${adj.oddsSpread.fav} ${adj.oddsSpread.line}` : "—"} • O/U: {adj.oddsTotal || "—"} • ML: {adj.oddsML ? `${game.awayAbbr} ${adj.oddsML.away || "—"} / ${game.homeAbbr} ${adj.oddsML.home || "—"}` : "—"}</div>
+                    <div>Books: {adj.numBooks || "—"}{adj.oddsRange && adj.oddsRange.min ? ` • Total range: ${adj.oddsRange.min}–${adj.oddsRange.max}` : ""}</div>
+                    {lockedRecord && <div>Locked: Spread {lockedSpread ? `${lockedSpread.fav} ${lockedSpread.line}` : "—"} • O/U {lockedTotal || "—"} • ML {lockedMl ? `${game.awayAbbr} ${lockedMl.away || "—"} / ${game.homeAbbr} ${lockedMl.home || "—"}` : "—"}{lockTimeStr ? ` • Locked ${lockTimeStr}` : ""}</div>}
+                  </div>
+                )}
                 {sport === "nfl" && (
                   <div style={{ marginTop: 10 }}>
                     <b>Top 5 NFL props (on-demand)</b>
