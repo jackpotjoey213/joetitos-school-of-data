@@ -421,7 +421,7 @@ export default function Predictor() {
         if (u.oddsSpread) ng.spread = u.oddsSpread;
         if (u.oddsTotal && u.oddsTotal > 0) ng.total = u.oddsTotal;
         if (u.oddsML) ng.moneyline = u.oddsML;
-        adj[g.id] = { consensus: u.consensus || u.lockedPrediction?.consensus || null, lockedPrediction: u.lockedPrediction || null, numBooks: u.numBooks || 0, oddsRange: u.oddsRange || null, oddsML: u.oddsML || null, oddsTotal: u.oddsTotal || null, oddsSpread: u.oddsSpread || null, noPregamePrediction: u.noPregamePrediction || false };
+        adj[g.id] = { consensus: u.consensus || u.lockedPrediction?.consensus || null, lockedPrediction: u.lockedPrediction || null, numBooks: u.numBooks || 0, oddsRange: u.oddsRange || null, oddsML: u.oddsML || null, oddsTotal: u.oddsTotal || null, oddsSpread: u.oddsSpread || null, oddsAudit: u.oddsAudit || null, noPregamePrediction: u.noPregamePrediction || false };
         const lockKey = g.espnId || g.id;
         if (u.isNewPrediction && u.consensus && !u.consensus.noPick && (u.currentTotal || ng.total) > 0) {
           // Complete, immutable lock record (Oct 31, 2026): total line,
@@ -818,6 +818,8 @@ export default function Predictor() {
                     <b>Current market (latest refresh)</b>
                     <div>Spread: {adj.oddsSpread ? `${adj.oddsSpread.fav} ${adj.oddsSpread.line}` : "—"} • O/U: {adj.oddsTotal || "—"} • ML: {adj.oddsML ? `${game.awayAbbr} ${adj.oddsML.away || "—"} / ${game.homeAbbr} ${adj.oddsML.home || "—"}` : "—"}</div>
                     <div>Books: {adj.numBooks || "—"}{adj.oddsRange && adj.oddsRange.min ? ` • Total range: ${adj.oddsRange.min}–${adj.oddsRange.max}` : ""}</div>
+                    {adj.oddsAudit && <div>Spread audit: consensus {adj.oddsSpread ? `${adj.oddsSpread.fav} ${adj.oddsSpread.line}` : "—"} on {adj.oddsAudit.spreadConsensusBooks} of {adj.oddsAudit.spreadBooks} books{adj.oddsAudit.spreadRange ? ` • Spread range: ${adj.oddsAudit.spreadRange.min}–${adj.oddsAudit.spreadRange.max}` : ""} • Total consensus on {adj.oddsAudit.totalConsensusBooks} of {adj.numBooks || "—"} books • ML median range: {adj.oddsAudit.mlRange ? `${game.awayAbbr} ${adj.oddsAudit.mlRange.awayMin} to ${adj.oddsAudit.mlRange.awayMax} / ${game.homeAbbr} ${adj.oddsAudit.mlRange.homeMin} to ${adj.oddsAudit.mlRange.homeMax}` : "—"}</div>}
+                    {adj.oddsAudit && ((adj.oddsAudit.spreadRange && adj.oddsAudit.spreadRange.max - adj.oddsAudit.spreadRange.min >= 2) || (adj.oddsAudit.totalRange && adj.oddsAudit.totalRange.max - adj.oddsAudit.totalRange.min >= 3) || adj.oddsAudit.spreadBooks < 3) && <div style={{ color: "#f59e0b" }}>⚠️ Line audit warning: books disagree widely or few books reported — check your book before betting this line.</div>}
                     {lockedRecord && <div>Locked: Spread {lockedSpread ? `${lockedSpread.fav} ${lockedSpread.line}` : "—"} • O/U {lockedTotal || "—"} • ML {lockedMl ? `${game.awayAbbr} ${lockedMl.away || "—"} / ${game.homeAbbr} ${lockedMl.home || "—"}` : "—"}{lockTimeStr ? ` • Locked ${lockTimeStr}` : ""}</div>}
                   </div>
                 )}

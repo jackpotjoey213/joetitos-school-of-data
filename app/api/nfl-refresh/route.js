@@ -134,19 +134,69 @@ function teamNameMatches(oName, fullName, abbr) {
   return !!(nLast && fLast && nLast === fLast);
 }
 
+function modeVal(arr) {
+  if (!arr.length) return null;
+  const counts = new Map();
+  for (const v of arr) counts.set(v, (counts.get(v) || 0) + 1);
+  let best = null, bestCount = -1;
+  for (const [v, c] of counts) if (c > bestCount) { best = v; bestCount = c; }
+  return { value: best, count: bestCount };
+}
+function medianVal(arr) {
+  if (!arr.length) return 0;
+  const s = [...arr].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 ? s[mid] : Math.round((s[mid - 1] + s[mid]) / 2);
+}
+function roundHalf(x) { return Math.round(x * 2) / 2; }
+function consensusVal(arr) {
+  // Most common book line; tie -> median rounded to nearest half-point.
+  // Never an average: the line shown must be a real book line format,
+  // never a phantom like -12.2 or 222.2 that no book offers.
+  if (!arr.length) return { value: 0, count: 0 };
+  const counts = new Map();
+  for (const v of arr) counts.set(v, (counts.get(v) || 0) + 1);
+  const maxC = Math.max(...counts.values());
+  const tied = [...counts.entries()].filter(([, c]) => c === maxC).map(([v]) => v);
+  if (tied.length === 1) return { value: tied[0], count: maxC };
+  const s = [...arr].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  const rawMedian = s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+  return { value: roundHalf(rawMedian), count: maxC };
+}
 function parseOdds(og, aN, hN, aA, hA) {
   if (!og?.length) return null;
-  let m = og.find((o) => teamNameMatches(o.away_team, aN, aA) && teamNameMatches(o.home_team, hN, hA));
-  if (!m) m = og.find((o) => (fuzzy(o.away_team, aN) || fuzzy(o.away_team, aA)) && (fuzzy(o.home_team, hN) || fuzzy(o.home_team, hA)));
-  if (!m) m = og.find((o) => fuzzy(o.away_team, aN) || fuzzy(o.home_team, hN));
+  let m = og.find(o => teamNameMatches(o.away_team, aN, aA) && teamNameMatches(o.home_team, hN, hA));
+  if (!m) m = og.find(o => (fuzzy(o.away_team, aN) || fuzzy(o.away_team, aA)) && (fuzzy(o.home_team, hN) || fuzzy(o.home_team, hA)));
   if (!m) return null;
-  let cT = 0, tC = 0, mn = 999, mx = 0, sL = 0, sC = 0, fv = "", aM = 0, hM = 0;
+  const totals = [], spreads = [], favNames = [], awayMLs = [], homeMLs = [];
   for (const b of (m.bookmakers || [])) for (const k of (b.markets || [])) {
-    if (k.key === "totals") for (const o of (k.outcomes || [])) if (o.name === "Over" && o.point) { cT += o.point; tC++; if (o.point < mn) mn = o.point; if (o.point > mx) mx = o.point; }
-    if (k.key === "spreads") for (const o of (k.outcomes || [])) if (o.point && o.point < 0) { sL += Math.abs(o.point); sC++; fv = o.name; }
-    if (k.key === "h2h") for (const o of (k.outcomes || [])) { if (teamNameMatches(o.name, aN, aA)) aM = o.price; else if (teamNameMatches(o.name, hN, hA)) hM = o.price; }
+    if (k.key === "totals") for (const o of (k.outcomes || [])) if (o.name === "Over" && o.point) totals.push(o.point);
+    if (k.key === "spreads") for (const o of (k.outcomes || [])) if (o.point && o.point < 0) { spreads.push(Math.abs(o.point)); favNames.push(o.name); }
+    if (k.key === "h2h") for (const o of (k.outcomes || [])) { if (teamNameMatches(o.name, aN, aA)) awayMLs.push(o.price); else if (teamNameMatches(o.name, hN, hA)) homeMLs.push(o.price); }
   }
-  return { total: tC > 0 ? Math.round((cT / tC) * 10) / 10 : 0, books: tC, range: { min: mn < 999 ? mn : 0, max: mx }, spread: sC > 0 ? Math.round((sL / sC) * 10) / 10 : 0, fav: fv ? (teamNameMatches(fv, hN, hA) && !teamNameMatches(fv, aN, aA) ? hA : teamNameMatches(fv, aN, aA) && !teamNameMatches(fv, hN, hA) ? aA : (fuzzy(fv, hN) || fuzzy(fv, hA) ? hA : aA)) : "", awayML: aM, homeML: hM };
+  const totalC = consensusVal(totals);
+  const spreadC = consensusVal(spreads);
+  const favMode = modeVal(favNames);
+  let fav = "";
+  if (favMode) {
+    const fn = favMode.value;
+    if (teamNameMatches(fn, hN, hA) && !teamNameMatches(fn, aN, aA)) fav = hA;
+    else if (teamNameMatches(fn, aN, aA) && !teamNameMatches(fn, hN, hA)) fav = aA;
+    else if (fuzzy(fn, hN) || fuzzy(fn, hA)) fav = hA;
+    else fav = aA;
+  }
+  const totalRange = totals.length ? { min: Math.min(...totals), max: Math.max(...totals) } : { min: 0, max: 0 };
+  const spreadRange = spreads.length ? { min: Math.min(...spreads), max: Math.max(...spreads) } : { min: 0, max: 0 };
+  return {
+    total: totalC.value, books: totals.length, range: totalRange,
+    spread: spreadC.value, fav,
+    awayML: medianVal(awayMLs), homeML: medianVal(homeMLs),
+    spreadBooks: spreads.length, spreadRange,
+    spreadConsensusBooks: spreadC.count, totalConsensusBooks: totalC.count, totalRange,
+    mlBooks: Math.max(awayMLs.length, homeMLs.length),
+    mlRange: { awayMin: awayMLs.length ? Math.min(...awayMLs) : 0, awayMax: awayMLs.length ? Math.max(...awayMLs) : 0, homeMin: homeMLs.length ? Math.min(...homeMLs) : 0, homeMax: homeMLs.length ? Math.max(...homeMLs) : 0 },
+  };
 }
 
 export async function POST(req) {
@@ -179,7 +229,7 @@ export async function POST(req) {
       awayScore: g.liveScore?.away ?? null, homeScore: g.liveScore?.home ?? null,
       clock: g.liveScore?.clock || "", period: g.liveScore?.period ?? null,
       currentTotal: odds?.total || g.total, currentSpread: odds?.fav ? `${odds.fav} -${odds.spread}` : null,
-      oddsRange: odds?.range || null, numBooks: odds?.books || 0,
+      oddsRange: odds?.range || null, numBooks: odds?.books || 0, oddsAudit: odds ? { spreadBooks: odds.spreadBooks || 0, spreadRange: odds.spreadRange || null, spreadConsensusBooks: odds.spreadConsensusBooks || 0, totalConsensusBooks: odds.totalConsensusBooks || 0, totalRange: odds.totalRange || null, mlBooks: odds.mlBooks || 0, mlRange: odds.mlRange || null } : null,
       oddsSpread: odds?.fav ? { fav: odds.fav, line: -odds.spread } : null,
       oddsTotal: odds?.total || null,
       oddsML: (odds?.awayML || odds?.homeML) ? { away: odds.awayML, home: odds.homeML } : null,
