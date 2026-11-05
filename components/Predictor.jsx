@@ -683,13 +683,37 @@ export default function Predictor() {
           (curTotal && lockedTotal && curTotal !== lockedTotal) ||
           (curMl && lockedMl && (curMl.away !== lockedMl.away || curMl.home !== lockedMl.home))
         );
+        // Upcoming picks vs CURRENT market (Nov 4, 2026, user feedback):
+        // a stale lock must not decide today's bet. For upcoming games
+        // the header and pick rows use the latest refresh market, with
+        // total/spread calls re-derived from the model itself against
+        // that current line. The locked pick is shown separately below
+        // and is used ONLY for grading. Final cards keep the locked
+        // rule (current market is empty after a final).
+        const dispSpreadOdds = !isFinal ? (adj.oddsSpread || effSpreadOdds) : effSpreadOdds;
+        const dispTotalLine = !isFinal ? (adj.oddsTotal || effTotalLine) : effTotalLine;
+        const dispMlOdds = !isFinal ? (adj.oddsML || effMlOdds) : effMlOdds;
+        let dispTotalCall = effCons?.totalCall, dispSpreadCall = effCons?.spreadCall;
+        if (!isFinal && effCons?.modelTotal != null && dispTotalLine) {
+          dispTotalCall = effCons.modelTotal > dispTotalLine ? "OVER" : effCons.modelTotal < dispTotalLine ? "UNDER" : null;
+        }
+        const dispMkt = dispSpreadOdds ? marketMarginHome(dispSpreadOdds, game.homeAbbr) : null;
+        if (!isFinal && effCons?.modelSpread != null && dispMkt != null) {
+          dispSpreadCall = effCons.modelSpread > dispMkt ? game.homeAbbr : game.awayAbbr;
+        }
+        const dispPcts = (!isFinal && effCons && !noPick) ? perBetPcts({ ...effCons, totalCall: dispTotalCall, spreadCall: dispSpreadCall }, sport, dispTotalLine, dispSpreadOdds, game.homeAbbr, game.awayAbbr) : { totalPct: null, spreadPct: null, mlPct: null, homeWinPct: null, awayWinPct: null };
+        const dispTotalPct = !isFinal ? dispPcts.totalPct : totalPct;
+        const dispSpreadPctRaw = !isFinal ? dispPcts.spreadPct : spreadPct;
+        const dispSpreadPickValid = !isFinal ? (dispSpreadPctRaw == null || dispSpreadPctRaw > 50) : spreadPickValid;
+        const dispSpreadPct = dispSpreadPickValid ? dispSpreadPctRaw : null;
+        const dispMlPct = !isFinal ? dispPcts.mlPct : mlPickPct;
         return (
           <div key={game.id} style={{ margin: "0 12px 12px", padding: 12, borderRadius: 12, background: "#15151f", border: "1px solid #2a2a3a" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
               <div>
                 <div style={{ fontSize: 15, fontWeight: 800 }}>{game.away} <span style={{ color: "#94a3b8", fontWeight: 400 }}>{game.awayRecord}</span> @ {game.home} <span style={{ color: "#94a3b8", fontWeight: 400 }}>{game.homeRecord}</span></div>
                 <div style={{ fontSize: 11, color: "#94a3b8" }}>{game.gameDate} • {game.time} • {game.conference || game.venue || ""}</div>
-                <div style={{ fontSize: 11, color: "#94a3b8" }}>Spread: {effSpreadOdds ? `${effSpreadOdds.fav} ${effSpreadOdds.line}` : "—"} • O/U: {effTotalLine || "—"} • ML: {effMlOdds ? `${game.awayAbbr} ${effMlOdds.away || "—"} / ${game.homeAbbr} ${effMlOdds.home || "—"}` : "—"}</div>
+                <div style={{ fontSize: 11, color: "#94a3b8" }}>Spread: {dispSpreadOdds ? `${dispSpreadOdds.fav} ${dispSpreadOdds.line}` : "—"} • O/U: {dispTotalLine || "—"} • ML: {dispMlOdds ? `${game.awayAbbr} ${dispMlOdds.away || "—"} / ${game.homeAbbr} ${dispMlOdds.home || "—"}` : "—"}</div>
               </div>
               <div style={{ textAlign: "right" }}>
                 {isFinal ? <span style={{ color: "#22c55e", fontWeight: 700 }}>FINAL</span> : isLive ? <span style={{ color: "#ef4444", fontWeight: 700 }}>🔴 LIVE {game.liveScore?.clock || ""}</span> : <span style={{ color: "#94a3b8" }}>Scheduled</span>}
@@ -715,11 +739,11 @@ export default function Predictor() {
               <div style={{ marginTop: 10 }}>
                 <div style={{ fontSize: 11, color: "#94a3b8", textAlign: "center" }}>Model: {effCons.awayPts ?? "?"} - {effCons.homePts ?? "?"} • Total {effCons.modelTotal}</div>
                 <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, color: "#94a3b8", margin: "10px 0 6px" }}>MODEL PICKS — MODEL % ONLY</div>
-                <PickRow label="OVER / UNDER" pick={effCons.totalCall ? `Take ${effCons.totalCall} ${effTotalLine || ""}` : "—"} detail={effCons.modelTotal != null && effTotalLine ? `Model total ${effCons.modelTotal} vs line ${effTotalLine}` : null} pct={totalPct} />
-                <PickRow label="SPREAD (ATS)" pick={effCons.spreadCall && spreadPickValid ? `Take ${spreadDisplay(effCons.spreadCall, effSpreadOdds)}` : "—"} detail={effCons.modelSpread != null && effSpreadOdds ? (spreadPickValid ? `Model margin ${effCons.modelSpread > 0 ? `${game.homeAbbr} +${effCons.modelSpread}` : `${game.awayAbbr} +${Math.abs(effCons.modelSpread)}`} vs market ${effSpreadOdds.fav} ${effSpreadOdds.line}` : `No spread pick — spread edge is 50% or less (model margin ${effCons.modelSpread > 0 ? `${game.homeAbbr} +${effCons.modelSpread}` : `${game.awayAbbr} +${Math.abs(effCons.modelSpread)}`} vs market ${effSpreadOdds.fav} ${effSpreadOdds.line})`) : null} pct={spreadPct} />
-                <PickRow label="MONEYLINE" pick={effCons.moneylinePick ? `Take ${effCons.moneylinePick} to win` : "No moneyline pick"} detail={(homeWinPct != null && awayWinPct != null) ? `${game.awayAbbr} ${awayWinPct}% to win • ${game.homeAbbr} ${homeWinPct}% to win` : null} pct={mlPickPct} />
+                <PickRow label="OVER / UNDER" pick={dispTotalCall ? `Take ${dispTotalCall} ${dispTotalLine || ""}` : "—"} detail={effCons.modelTotal != null && dispTotalLine ? `Model total ${effCons.modelTotal} vs line ${dispTotalLine}` : null} pct={dispTotalPct} />
+                <PickRow label="SPREAD (ATS)" pick={dispSpreadCall && dispSpreadPickValid ? `Take ${spreadDisplay(dispSpreadCall, dispSpreadOdds)}` : "—"} detail={effCons.modelSpread != null && dispSpreadOdds ? (dispSpreadPickValid ? `Model margin ${effCons.modelSpread > 0 ? `${game.homeAbbr} +${effCons.modelSpread}` : `${game.awayAbbr} +${Math.abs(effCons.modelSpread)}`} vs market ${dispSpreadOdds.fav} ${dispSpreadOdds.line}` : `No spread pick — spread edge is 50% or less (model margin ${effCons.modelSpread > 0 ? `${game.homeAbbr} +${effCons.modelSpread}` : `${game.awayAbbr} +${Math.abs(effCons.modelSpread)}`} vs market ${dispSpreadOdds.fav} ${dispSpreadOdds.line})`) : null} pct={dispSpreadPct} />
+                <PickRow label="MONEYLINE" pick={effCons.moneylinePick ? `Take ${effCons.moneylinePick} to win` : "No moneyline pick"} detail={(homeWinPct != null && awayWinPct != null) ? `${game.awayAbbr} ${awayWinPct}% to win • ${game.homeAbbr} ${homeWinPct}% to win` : null} pct={dispMlPct} />
                 {spreadCorrected && <div style={{ fontSize: 10, color: "#f59e0b", marginTop: 2 }}>{spreadCorrectionLabel}</div>}
-                {lockedRecord && <div style={{ fontSize: 10, color: "#22c55e", textAlign: "center" }}>🔒 Pregame pick locked (line {lockedRecord.line}{lockTimeStr ? `, ${lockTimeStr}` : ""}) — this is the pick that will be graded.</div>}
+                {lockedRecord && <div style={{ fontSize: 10, color: "#22c55e", textAlign: "center" }}>🔒 Locked for grading (line {lockedRecord.line}{lockTimeStr ? `, ${lockTimeStr}` : ""}): {effCons ? `${effCons.spreadCall ? spreadDisplay(effCons.spreadCall, effSpreadOdds) + (spreadPct != null ? ` ${spreadPct}%` : "") : "no spread pick"} • ${effCons.totalCall ? `${effCons.totalCall} ${effTotalLine || ""}${totalPct != null ? ` ${totalPct}%` : ""}` : "no total pick"} • ${effCons.moneylinePick ? `${effCons.moneylinePick} ML${mlPickPct != null ? ` ${mlPickPct}%` : ""}` : "no ML pick"}` : "locked pick"} — grading uses this locked line, not today's market.</div>}
                 {currentDiffers && <div style={{ fontSize: 11, color: "#f59e0b", textAlign: "center", marginTop: 4 }}>⚠️ Line moved since lock — Current market: Spread {curSpread ? `${curSpread.fav} ${curSpread.line}` : "—"} • O/U {curTotal || "—"} • ML {curMl ? `${game.awayAbbr} ${curMl.away || "—"} / ${game.homeAbbr} ${curMl.home || "—"}` : "—"} — grading still uses the locked line above.</div>}
                 {cons.reasons?.length > 0 && <div style={{ fontSize: 11, color: "#cbd5e1", marginTop: 6, textAlign: "center" }}>{cons.reasons.slice(0, 4).map((r, i) => <div key={i}>{r}</div>)}</div>}
                 {adj.oddsML && cons.moneylinePick && (
