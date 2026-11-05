@@ -456,7 +456,15 @@ export default function Predictor() {
         try {
           const existing = getLocked(sport)[lockKey];
           const stillScheduled = u.status === "scheduled" || (u.status !== "live" && u.status !== "final" && ng.status !== "live" && ng.status !== "final");
-          if (existing && stillScheduled && u.isNewPrediction && u.consensus && !u.consensus.noPick && (u.currentTotal || ng.total) > 0) {
+          // BUG FIX Nov 4, 2026: locked games return isNewPrediction=false
+          // from the refresh route, so requiring it meant this update
+          // NEVER fired for a locked game (Nets at 4:24 PM still showed
+          // Nov 3 / +2.4 / 211.9 after a manual Refresh). Do not require
+          // isNewPrediction here. Also recompute total/spread calls
+          // against the NEW lines from the model itself — copying the
+          // old calls would keep e.g. UNDER 230.5 against a 222.5 line
+          // when the model total (230) now says OVER.
+          if (existing && stillScheduled && u.consensus && !u.consensus.noPick && (u.currentTotal || ng.total) > 0) {
             const curTotalLine = u.currentTotal || ng.total;
             const curSpread = u.oddsSpread || null, curMl = u.oddsML || null;
             const oldSpread = existing.spreadOdds || null, oldMl = existing.mlOdds || null;
@@ -464,12 +472,17 @@ export default function Predictor() {
               (curTotalLine && existing.line && curTotalLine !== existing.line) ||
               (curMl && oldMl && (curMl.away !== oldMl.away || curMl.home !== oldMl.home));
             if (marketMoved) {
-              const curPcts = perBetPcts(u.consensus, sport, curTotalLine, curSpread, g.homeAbbr, g.awayAbbr);
+              let newTotalCall = u.consensus.totalCall, newSpreadCall = u.consensus.spreadCall;
+              if (u.consensus.modelTotal != null && curTotalLine) newTotalCall = u.consensus.modelTotal > curTotalLine ? "OVER" : u.consensus.modelTotal < curTotalLine ? "UNDER" : null;
+              const newMkt = curSpread ? marketMarginHome(curSpread, g.homeAbbr) : null;
+              if (u.consensus.modelSpread != null && newMkt != null) newSpreadCall = u.consensus.modelSpread > newMkt ? g.homeAbbr : g.awayAbbr;
+              const newCons = { ...u.consensus, totalCall: newTotalCall, spreadCall: newSpreadCall };
+              const curPcts = perBetPcts(newCons, sport, curTotalLine, curSpread, g.homeAbbr, g.awayAbbr);
               replaceLockedPrediction(sport, lockKey, {
-                totalCall: u.consensus.totalCall, strength: u.consensus.strength,
-                spreadCall: u.consensus.spreadCall, moneylinePick: u.consensus.moneylinePick || null,
+                totalCall: newTotalCall, strength: u.consensus.strength,
+                spreadCall: newSpreadCall, moneylinePick: u.consensus.moneylinePick || null,
                 predAway: u.consensus.awayPts || 0, predHome: u.consensus.homePts || 0,
-                line: curTotalLine, modelTotal: u.consensus.modelTotal || 0, modelSpread: u.consensus.modelSpread ?? null, consensus: u.consensus,
+                line: curTotalLine, modelTotal: u.consensus.modelTotal || 0, modelSpread: u.consensus.modelSpread ?? null, consensus: newCons,
                 spreadOdds: curSpread, mlOdds: curMl,
                 totalPct: curPcts.totalPct, spreadPct: curPcts.spreadPct, mlPct: curPcts.mlPct,
                 gameInfo: { away: g.awayAbbr, home: g.homeAbbr },
