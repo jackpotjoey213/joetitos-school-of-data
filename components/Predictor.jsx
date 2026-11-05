@@ -465,7 +465,7 @@ export default function Predictor() {
           // old calls would keep e.g. UNDER 230.5 against a 222.5 line
           // when the model total (230) now says OVER.
           if (existing && stillScheduled && u.consensus && !u.consensus.noPick && (u.currentTotal || ng.total) > 0) {
-            const curTotalLine = u.currentTotal || ng.total;
+            const curTotalLine = (u.oddsTotal && u.oddsTotal > 0) ? u.oddsTotal : (u.currentTotal || ng.total);
             const curSpread = u.oddsSpread || null, curMl = u.oddsML || null;
             const oldSpread = existing.spreadOdds || null, oldMl = existing.mlOdds || null;
             const marketMoved = (curSpread && oldSpread && (curSpread.fav !== oldSpread.fav || curSpread.line !== oldSpread.line)) ||
@@ -747,10 +747,12 @@ export default function Predictor() {
         // that current line. The locked pick is shown separately below
         // and is used ONLY for grading. Final cards keep the locked
         // rule (current market is empty after a final).
-        const dispSpreadOdds = !isFinal ? (adj.oddsSpread || effSpreadOdds) : effSpreadOdds;
-        const dispTotalLine = !isFinal ? (adj.oddsTotal || effTotalLine) : effTotalLine;
-        const dispMlOdds = !isFinal ? (adj.oddsML || effMlOdds) : effMlOdds;
+        const dispSpreadOdds = !isFinal ? adj.oddsSpread : effSpreadOdds;
+        const dispTotalLine = !isFinal ? adj.oddsTotal : effTotalLine;
+        const dispMlOdds = !isFinal ? adj.oddsML : effMlOdds;
         let dispTotalCall = effCons?.totalCall, dispSpreadCall = effCons?.spreadCall;
+        if (!isFinal && !dispTotalLine) dispTotalCall = null;
+        if (!isFinal && !dispSpreadOdds) dispSpreadCall = null;
         if (!isFinal && effCons?.modelTotal != null && dispTotalLine) {
           dispTotalCall = effCons.modelTotal > dispTotalLine ? "OVER" : effCons.modelTotal < dispTotalLine ? "UNDER" : null;
         }
