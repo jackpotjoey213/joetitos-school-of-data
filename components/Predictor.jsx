@@ -15,6 +15,15 @@ function lockPrediction(sport, gameId, pred) {
     return locked;
   } catch { return {}; }
 }
+function replaceLockedPrediction(sport, gameId, pred) {
+  try {
+    const key = lockKeyFor(sport);
+    const locked = JSON.parse(localStorage.getItem(key) || "{}");
+    locked[gameId] = { ...pred, lockedAt: new Date().toISOString(), sport };
+    localStorage.setItem(key, JSON.stringify(locked));
+    return locked;
+  } catch { return {}; }
+}
 function parseClockMinutes(clock) {
   if (!clock) return null;
   const m = String(clock).match(/(\d{1,2}):(\d{2})/);
@@ -434,6 +443,41 @@ export default function Predictor() {
             gameStartTime: g.startTime || null,
           });
         }
+        // Stale-lock update (Nov 4, 2026, Celtics case): a lock created
+        // a day early must NOT grade against that day-old line once the
+        // market has moved. While the game is still scheduled (never
+        // live/final), if the current refresh market differs from the
+        // stored lock on spread, total, or ML, replace the stored lock
+        // with today's consensus + today's lines + today's %s, with a
+        // new lock time. Grading then uses the last pregame market
+        // before tipoff — the line a bet placed today would actually
+        // be graded against — not the stale line. Once the game goes
+        // live or final, the lock freezes and is never overwritten.
+        try {
+          const existing = getLocked(sport)[lockKey];
+          const stillScheduled = u.status === "scheduled" || (u.status !== "live" && u.status !== "final" && ng.status !== "live" && ng.status !== "final");
+          if (existing && stillScheduled && u.isNewPrediction && u.consensus && !u.consensus.noPick && (u.currentTotal || ng.total) > 0) {
+            const curTotalLine = u.currentTotal || ng.total;
+            const curSpread = u.oddsSpread || null, curMl = u.oddsML || null;
+            const oldSpread = existing.spreadOdds || null, oldMl = existing.mlOdds || null;
+            const marketMoved = (curSpread && oldSpread && (curSpread.fav !== oldSpread.fav || curSpread.line !== oldSpread.line)) ||
+              (curTotalLine && existing.line && curTotalLine !== existing.line) ||
+              (curMl && oldMl && (curMl.away !== oldMl.away || curMl.home !== oldMl.home));
+            if (marketMoved) {
+              const curPcts = perBetPcts(u.consensus, sport, curTotalLine, curSpread, g.homeAbbr, g.awayAbbr);
+              replaceLockedPrediction(sport, lockKey, {
+                totalCall: u.consensus.totalCall, strength: u.consensus.strength,
+                spreadCall: u.consensus.spreadCall, moneylinePick: u.consensus.moneylinePick || null,
+                predAway: u.consensus.awayPts || 0, predHome: u.consensus.homePts || 0,
+                line: curTotalLine, modelTotal: u.consensus.modelTotal || 0, modelSpread: u.consensus.modelSpread ?? null, consensus: u.consensus,
+                spreadOdds: curSpread, mlOdds: curMl,
+                totalPct: curPcts.totalPct, spreadPct: curPcts.spreadPct, mlPct: curPcts.mlPct,
+                gameInfo: { away: g.awayAbbr, home: g.homeAbbr },
+                gameStartTime: g.startTime || null,
+              });
+            }
+          }
+        } catch { /* stale-lock update is best-effort */ }
         // Repair an already-locked spread pick that was derived with the
         // buggy NBA logic (Oct 31, 2026, SA case): if the stored pick's
         // own model % would be below 50% when recomputed from the locked
