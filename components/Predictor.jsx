@@ -225,6 +225,16 @@ function finalGradeForGame(game, adj, sport) {
         spreadCorrectionLabel = lockedRecord.spreadOdds
           ? "Spread pick corrected for the home-favorite bug (locked model score and lines unchanged)."
           : "Spread pick corrected using current market line (original lock did not save a spread line).";
+      } else if (!corrected) {
+        // NO EDGE (Nov 7, 2026, Nets case): |model margin - market
+        // margin| < 2 pts means the stored spread pick is a coin flip.
+        // The display row already suppresses it, but the LOCKED NOTE
+        // reads effCons.spreadCall directly — so it kept showing
+        // "BKN +7.5 52%" while the row said no spread pick, even after
+        // the lock-repair fix. Null it here too, so the note, the row,
+        // and final grading all agree there is no spread pick. The
+        // stored lock is still repaired on refresh (handleRefresh).
+        effCons = { ...rawEffCons, spreadCall: null };
       }
     }
   }
