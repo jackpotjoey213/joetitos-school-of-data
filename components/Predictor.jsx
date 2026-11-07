@@ -431,12 +431,20 @@ export default function Predictor() {
           // lockPrediction only writes if no lock exists for this game,
           // so a locked record is never overwritten by a later refresh.
           const lockTotalLine = u.currentTotal || ng.total;
-          const lockPcts = perBetPcts(u.consensus, sport, lockTotalLine, u.oddsSpread || null, g.homeAbbr, g.awayAbbr);
+          // A lock must never store a spread pick the display would
+          // suppress: if |model margin - market margin| < 2 pts there is
+          // no edge, so the spread pick is null here too (Nov 7, 2026 —
+          // BKN +7.5 52% / WSH +12 53% were stored in locks while the
+          // display row correctly said no spread pick).
+          const lockMkt = u.oddsSpread ? marketMarginHome(u.oddsSpread, g.homeAbbr) : null;
+          const lockSpreadCall = (u.consensus.modelSpread != null && lockMkt != null && Math.abs(u.consensus.modelSpread - lockMkt) < 2) ? null : u.consensus.spreadCall;
+          const lockCons = lockSpreadCall === u.consensus.spreadCall ? u.consensus : { ...u.consensus, spreadCall: lockSpreadCall };
+          const lockPcts = perBetPcts(lockCons, sport, lockTotalLine, u.oddsSpread || null, g.homeAbbr, g.awayAbbr);
           lockPrediction(sport, lockKey, {
             totalCall: u.consensus.totalCall, strength: u.consensus.strength,
-            spreadCall: u.consensus.spreadCall, moneylinePick: u.consensus.moneylinePick || null,
+            spreadCall: lockSpreadCall, moneylinePick: u.consensus.moneylinePick || null,
             predAway: u.consensus.awayPts || 0, predHome: u.consensus.homePts || 0,
-            line: lockTotalLine, modelTotal: u.consensus.modelTotal || 0, modelSpread: u.consensus.modelSpread ?? null, consensus: u.consensus,
+            line: lockTotalLine, modelTotal: u.consensus.modelTotal || 0, modelSpread: u.consensus.modelSpread ?? null, consensus: lockCons,
             spreadOdds: u.oddsSpread || null, mlOdds: u.oddsML || null,
             totalPct: lockPcts.totalPct, spreadPct: lockPcts.spreadPct, mlPct: lockPcts.mlPct,
             gameInfo: { away: g.awayAbbr, home: g.homeAbbr },
@@ -475,7 +483,7 @@ export default function Predictor() {
               let newTotalCall = u.consensus.totalCall, newSpreadCall = u.consensus.spreadCall;
               if (u.consensus.modelTotal != null && curTotalLine) newTotalCall = u.consensus.modelTotal > curTotalLine ? "OVER" : u.consensus.modelTotal < curTotalLine ? "UNDER" : null;
               const newMkt = curSpread ? marketMarginHome(curSpread, g.homeAbbr) : null;
-              if (u.consensus.modelSpread != null && newMkt != null) newSpreadCall = u.consensus.modelSpread > newMkt ? g.homeAbbr : g.awayAbbr;
+              if (u.consensus.modelSpread != null && newMkt != null) newSpreadCall = Math.abs(u.consensus.modelSpread - newMkt) >= 2 ? (u.consensus.modelSpread > newMkt ? g.homeAbbr : g.awayAbbr) : null;
               const newCons = { ...u.consensus, totalCall: newTotalCall, spreadCall: newSpreadCall };
               const curPcts = perBetPcts(newCons, sport, curTotalLine, curSpread, g.homeAbbr, g.awayAbbr);
               replaceLockedPrediction(sport, lockKey, {
@@ -510,6 +518,13 @@ export default function Predictor() {
                 const allLocked = getLocked(sport);
                 const repairPcts = perBetPcts({ ...existing.consensus, spreadCall: repairCorrected }, sport, existing.line, repairSpread, g.homeAbbr, g.awayAbbr);
                 allLocked[lockKey] = { ...existing, spreadCall: repairCorrected, spreadOdds: repairSpread, spreadPct: repairPcts.spreadPct, consensus: { ...existing.consensus, spreadCall: repairCorrected } };
+                localStorage.setItem(lockKeyFor(sport), JSON.stringify(allLocked));
+              } else if (!repairCorrected && existing.spreadCall) {
+                // No edge (|model margin - market margin| < 2): the stored
+                // spread pick is a coin flip the display already suppresses.
+                // Clear it so grading does not grade a pick that does not exist.
+                const allLocked = getLocked(sport);
+                allLocked[lockKey] = { ...existing, spreadCall: null, spreadPct: null, consensus: { ...existing.consensus, spreadCall: null } };
                 localStorage.setItem(lockKeyFor(sport), JSON.stringify(allLocked));
               }
             }
