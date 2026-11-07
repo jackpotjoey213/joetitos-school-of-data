@@ -46,7 +46,7 @@ function parseNBAEvent(ev, idx) {
   const gameDate = startTime.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "America/Los_Angeles" });
 
   return {
-    id: idx + 1,
+    id: ev.id, // STABLE ID (Nov 7, 2026): was idx+1, reassigned after sorting by status, so a game changed id whenever another game tipped off / finished — refresh updates, live data and props then attached to the wrong card, and the CBB upcoming list appeared to change between fetches. ESPN event id never changes.
     espnId: ev.id,
     sport: "nba",
     away: away.team?.displayName || "Away",
@@ -87,7 +87,7 @@ export async function GET(req) {
       if (a.status === "scheduled") return new Date(a.startTime) - new Date(b.startTime);
       return 0;
     });
-    games.forEach((g, i) => g.id = i + 1);
+    // ids are stable ESPN event ids now — do NOT reassign by sort position.
     return NextResponse.json({ games, count: games.length, sport: "nba", date: new Date().toISOString() });
   } catch (e) {
     return NextResponse.json({ error: e.message, games: [] }, { status: 500 });

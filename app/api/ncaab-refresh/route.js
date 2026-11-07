@@ -287,10 +287,21 @@ function buildCBBPrediction(g, odds, awayTeam, homeTeam, b2bInfo, playoffs = fal
   const spreadLine = odds?.spread || 0;
 
   // --- CBB TEAM STATS (strictly basketball metrics) ---
-  const awayPPG = awayTeam?.ppg || NBA_AVG_PPG;
-  const homePPG = homeTeam?.ppg || NBA_AVG_PPG;
-  const awayOPPG = awayTeam?.oppg || NBA_AVG_PPG;
-  const homeOPPG = homeTeam?.oppg || NBA_AVG_PPG;
+  // EARLY-SEASON SHRINKAGE (Nov 7, 2026): teams have played 1-2 games
+  // and raw PPG/OPPG are blowout extremes (ARK 106 PPG / 61 OPPG in 1
+  // game, UVA 93/66 in 2). The pace model multiplies by OPPG/PPG ratios,
+  // so those extremes collapse model totals (ARK @ UVA: 108 vs a 158.5
+  // market line; tracker avg total error 31.3 pts). Shrink each team's
+  // PPG/OPPG toward the league average (73) with a 4-game prior:
+  // shrunk = (gp*value + 4*73) / (gp+4). ARK @ UVA goes 108 -> ~144,
+  // GONZ @ NMSU 141 -> ~147 (vs 151.5 line). As teams play more games
+  // the shrinkage fades and raw stats take over.
+  const shrinkCBB = (v, gp) => (gp * v + 4 * NBA_AVG_PPG) / (gp + 4);
+  const awayGP = awayTeam?.gp || 0, homeGP = homeTeam?.gp || 0;
+  const awayPPG = awayTeam?.ppg ? shrinkCBB(awayTeam.ppg, awayGP) : NBA_AVG_PPG;
+  const homePPG = homeTeam?.ppg ? shrinkCBB(homeTeam.ppg, homeGP) : NBA_AVG_PPG;
+  const awayOPPG = awayTeam?.oppg ? shrinkCBB(awayTeam.oppg, awayGP) : NBA_AVG_PPG;
+  const homeOPPG = homeTeam?.oppg ? shrinkCBB(homeTeam.oppg, homeGP) : NBA_AVG_PPG;
   const hasTeamData = !!(awayTeam?.ppg && homeTeam?.ppg);
 
   // --- POSSESSION-BASED PROJECTION ---

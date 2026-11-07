@@ -763,7 +763,13 @@ export default function Predictor() {
         const dispPcts = (!isFinal && effCons && !noPick) ? perBetPcts({ ...effCons, totalCall: dispTotalCall, spreadCall: dispSpreadCall }, sport, dispTotalLine, dispSpreadOdds, game.homeAbbr, game.awayAbbr) : { totalPct: null, spreadPct: null, mlPct: null, homeWinPct: null, awayWinPct: null };
         const dispTotalPct = !isFinal ? dispPcts.totalPct : totalPct;
         const dispSpreadPctRaw = !isFinal ? dispPcts.spreadPct : spreadPct;
-        const dispSpreadPickValid = !isFinal ? (dispSpreadPctRaw == null || dispSpreadPctRaw > 50) : spreadPickValid;
+        // Current spread pick needs a real edge, not just >50%: the locked
+        // consensus requires |model margin - market margin| >= 2 pts, and
+        // the current display must match it. Without this, BKN +7.5 at 52%
+        // and WSH +12 at 53% showed as picks on Nov 7 while their locked
+        // notes correctly said 'no spread pick' (model margin only 0.5-1 pt
+        // from the market — a coin flip, not an edge).
+        const dispSpreadPickValid = !isFinal ? ((dispSpreadPctRaw == null || dispSpreadPctRaw > 50) && (effCons?.modelSpread == null || dispMkt == null || Math.abs(effCons.modelSpread - dispMkt) >= 2)) : spreadPickValid;
         const dispSpreadPct = dispSpreadPickValid ? dispSpreadPctRaw : null;
         const dispMlPct = !isFinal ? dispPcts.mlPct : mlPickPct;
         return (
