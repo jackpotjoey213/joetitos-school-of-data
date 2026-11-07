@@ -122,7 +122,12 @@ function Tracker({ history, sport, trackerAvailable }) {
     return { wins, losses: graded.length - wins, pct: graded.length ? ((wins / graded.length) * 100).toFixed(1) : "—", n: graded.length };
   };
   const ou = calc("totalCorrect"), ats = calc("spreadCorrect"), ml = calc("moneylineCorrect");
-  const avgErr = n ? (filtered.reduce((a, h) => a + Math.abs(h.totalError || 0), 0) / n).toFixed(1) : "—";
+  // Avg total error only over games with a graded model total — an
+  // ungraded final has no model total, and counting it as 0 error
+  // would deflate the average (Nov 7, 2026).
+  const errRecs = filtered.filter((h) => typeof h.totalError === "number" && h.totalCall);
+  const avgErr = errRecs.length ? (errRecs.reduce((a, h) => a + Math.abs(h.totalError), 0) / errRecs.length).toFixed(1) : "—";
+  const ungradedCount = filtered.filter((h) => h.ungraded).length;
   const streak = (key) => {
     let s = 0, dir = "";
     for (let i = filtered.length - 1; i >= 0; i--) {
@@ -162,6 +167,7 @@ function Tracker({ history, sport, trackerAvailable }) {
         ))}
       </div>
       {n === 0 && <div style={{ textAlign: "center", fontSize: 11, color: "#94a3b8", marginTop: 8 }}>No graded pregame picks in this window yet. Hit Refresh before games start to lock picks.</div>}
+      {ungradedCount > 0 && <div style={{ textAlign: "center", fontSize: 11, color: "#f59e0b", marginTop: 8 }}>{ungradedCount} game{ungradedCount > 1 ? "s" : ""} in this window had no locked pick and {ungradedCount > 1 ? "were" : "was"} not graded — open the site and hit Refresh before tipoff to lock picks.</div>}
       {n > 0 && n < 20 && <div style={{ textAlign: "center", fontSize: 11, color: "#f59e0b", marginTop: 8 }}>Small sample ({n} games) — win % is noisy. Do not over-interpret it.</div>}
       {showLog && (
         <div style={{ marginTop: 10, fontSize: 11 }}>
@@ -171,11 +177,15 @@ function Tracker({ history, sport, trackerAvailable }) {
                 <span>{h.date} {h.away} @ {h.home}</span>
                 <span>Actual {h.actualTotal}{h.actualMarginHome != null ? ` • Margin ${h.actualMarginHome > 0 ? `${h.home} +${h.actualMarginHome}` : h.actualMarginHome < 0 ? `${h.away} +${Math.abs(h.actualMarginHome)}` : "Tie"}` : ""}</span>
               </div>
+              {h.ungraded ? (
+                <div style={{ color: "#f59e0b" }}>No pick was locked for this game — not graded.</div>
+              ) : (
               <div style={{ color: "#94a3b8" }}>
                 O/U {h.totalCall || "—"} {h.line} ({h.totalPct != null ? `${h.totalPct}%` : "—"}) → {gradeMark(h.totalCorrect)} •
                 ATS {h.spreadCall || "—"}{h.spreadOdds ? ` ${h.spreadOdds.fav} ${h.spreadOdds.line}` : ""}{h.spreadPct != null ? ` (${h.spreadPct}%)` : ""} → {h.spreadCorrect == null && h.spreadCall ? "Can't grade (no spread line saved)" : gradeMark(h.spreadCorrect)} •
                 ML {h.moneylinePick || "—"}{h.mlPct != null ? ` (${h.mlPct}%)` : ""} → {gradeMark(h.moneylineCorrect)}
               </div>
+              )}
             </div>
           ))}
         </div>
@@ -574,7 +584,12 @@ export default function Predictor() {
       setLog(`${updates.filter((u) => u.status === "live").length} live, ${updates.filter((u) => u.status === "final").length} final, ${updates.filter((u) => u.isNewPrediction).length} new predictions`);
     } catch (e) { setLog("Error: " + e.message); }
     setRefreshing(false);
-  }, [games, sport, history]);
+    // Tracker finals used to load only on league switch, so games that
+    // finished during the day never entered Yesterday / Last 7 Days
+    // until a switch or reload (Nov 7, 2026). Re-fetch them on every
+    // refresh; it only replaces the tracker list, never the render list.
+    loadTrackerGames(sport);
+  }, [games, sport, history, loadTrackerGames]);
 
   const handleRefreshRef = useRef();
   handleRefreshRef.current = handleRefresh;
@@ -657,9 +672,38 @@ export default function Predictor() {
         actualMarginHome: fg.finalGrades.actualMarginHome, actualWinner: fg.finalGrades.actualWinner,
         totalError: fg.finalGrades.actualTotal - predTotal,
         date: game.startTime ? ptDateFromIso(game.startTime) : ptDateStr(0),
+        startTime: game.startTime || "",
       });
     }
-    return [...byKey.values()];
+    // TRACKER ACCURACY (Nov 7, 2026): a final with no locked pick is
+    // still a game that happened. Before this, Yesterday showed "0 games"
+    // on a day 9 games were played, because only locked games entered
+    // the record. Add every final in the window as an UNGRADED entry so
+    // the game count is honest — W/L still only counts graded picks.
+    const allFinals = [...trackerFinals, ...games.filter((g) => g.status === "final" && g.liveScore)];
+    const seenFinal = new Set();
+    for (const game of allFinals) {
+      const key = String(game.espnId || game.id) + ":" + sport;
+      if (seenFinal.has(key) || byKey.has(key)) continue;
+      seenFinal.add(key);
+      byKey.set(key, {
+        gameId: String(game.espnId || game.id), sport, away: game.awayAbbr, home: game.homeAbbr,
+        predictedTotal: null, actualTotal: game.liveScore.away + game.liveScore.home,
+        totalCall: null, line: null, totalCorrect: null, spreadCorrect: null, moneylineCorrect: null,
+        spreadCall: null, moneylinePick: null, spreadOdds: null, mlOdds: null,
+        totalPct: null, spreadPct: null, mlPct: null,
+        actualMarginHome: game.liveScore.home - game.liveScore.away,
+        actualWinner: game.liveScore.away > game.liveScore.home ? game.awayAbbr : game.liveScore.home > game.liveScore.away ? game.homeAbbr : null,
+        totalError: null, ungraded: true,
+        date: game.startTime ? ptDateFromIso(game.startTime) : ptDateStr(0),
+        startTime: game.startTime || "",
+      });
+    }
+    // Chronological order (date, then tipoff) — streaks and the log
+    // depend on it. Before this the order mixed server-newest-first
+    // with scores order, so a streak could be read from the oldest
+    // games instead of the most recent ones.
+    return [...byKey.values()].sort((a, b) => (a.date || "") < (b.date || "") ? -1 : (a.date || "") > (b.date || "") ? 1 : ((a.startTime || "") < (b.startTime || "") ? -1 : 1));
   })();
   const visibleGames = filter === "all" ? games : filter === "live" ? games.filter((g) => g.status === "live") : filter === "completed" ? games.filter((g) => g.status === "final") : games.filter((g) => g.status === "scheduled" || g.status === "live");
   const liveCount = games.filter((g) => g.status === "live").length;

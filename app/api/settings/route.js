@@ -37,16 +37,24 @@ export async function POST(req) {
       return NextResponse.json({ ok: true, trackerAvailable: true });
     }
     if (body.type === "prediction") {
-      const { data: existing } = await supabase.from("predictions").select("id").eq("user_id", userId).eq("game_id", body.gameId).limit(1);
-      if (existing?.length) return NextResponse.json({ ok: true, trackerAvailable: true, duplicate: true });
-      await supabase.from("predictions").insert({
+      // UPSERT, not skip-on-duplicate (Nov 7, 2026): a game first graded
+      // from a stale or repaired lock must be re-graded when the lock is
+      // corrected — the old code returned duplicate:true and kept the
+      // wrong record forever.
+      const row = {
         user_id: userId, game_id: body.gameId, away_team: body.away, home_team: body.home,
         predicted_total: body.predictedTotal, actual_total: body.actualTotal, total_call: body.totalCall,
         line: body.line, total_correct: body.totalCorrect, spread_correct: body.spreadCorrect,
         moneyline_correct: body.moneylineCorrect ?? null, moneyline_pick: body.moneylinePick || null,
         spread_call: body.spreadCall || null, total_error: body.totalError, game_date: body.date,
         sport: body.sport || "nba",
-      });
+      };
+      const { data: existing } = await supabase.from("predictions").select("id").eq("user_id", userId).eq("game_id", body.gameId).limit(1);
+      if (existing?.length) {
+        await supabase.from("predictions").update(row).eq("id", existing[0].id);
+        return NextResponse.json({ ok: true, trackerAvailable: true, updated: true });
+      }
+      await supabase.from("predictions").insert(row);
       return NextResponse.json({ ok: true, trackerAvailable: true });
     }
     return NextResponse.json({ error: "Unknown type" }, { status: 400 });
