@@ -283,7 +283,12 @@ function findTeam(teams, abbr, name) {
 // CBB PREDICTION ENGINE (NBA pace model, adapted) (isolated from MLB)
 // ==========================================
 function buildCBBPrediction(g, odds, awayTeam, homeTeam, b2bInfo, playoffs = false) {
-  const line = odds?.total || g.total || 220;
+  // NO FAKE LINE (Nov 12, 2026): when there is no real total line
+  // (no odds and no game total), the line is null — never a
+  // placeholder like 220. A placeholder leaked into deep analysis as
+  // "Pace model: 145 < line 220 (-75.0 pts)", contradicting the card's
+  // own "no fake line is used" warning.
+  const line = odds?.total || g.total || null;
   const spreadLine = odds?.spread || 0;
 
   // --- CBB TEAM STATS (strictly basketball metrics) ---
@@ -382,12 +387,17 @@ function buildCBBPrediction(g, odds, awayTeam, homeTeam, b2bInfo, playoffs = fal
 
   // STRICT O/U RULE: Model total directly determines the call
   // No secondary signals can override the math
-  const edge = modelTotal - line;
+  // No line = no edge, no vote, no call (Nov 12, 2026): the old
+  // code compared the model total to a 220 placeholder and pushed a
+  // "Pace model: X < line 220" reason for games with no odds at all.
+  const edge = line != null ? modelTotal - line : null;
   const pw = hasTeamData ? 3.0 : 1.5;
-  if (Math.abs(edge) >= 2) {
+  if (line != null && edge != null && Math.abs(edge) >= 2) {
     if (edge > 0) { overW += pw; reasons.push(`Pace model: ${modelTotal} > line ${line} (+${edge.toFixed(1)} pts)`); }
     else { underW += pw; reasons.push(`Pace model: ${modelTotal} < line ${line} (${edge.toFixed(1)} pts)`); }
     dataSources.push(`Pace Model: ${projPace.toFixed(0)} poss × PPP → ${modelTotal} total`);
+  } else if (line == null) {
+    reasons.push(`Pace model: ${modelTotal} total — no line yet, no total pick`);
   }
 
   // Defensive matchup (1.5x)
@@ -410,10 +420,12 @@ function buildCBBPrediction(g, odds, awayTeam, homeTeam, b2bInfo, playoffs = fal
   reasons.push(`Win prob: ${g.awayAbbr} ${(awayWP*100).toFixed(0)}% / ${g.homeAbbr} ${(homeWP*100).toFixed(0)}%`);
 
   // STRICT O/U CALL — derived ONLY from model total vs line
-  const call = modelTotal > line ? "OVER" : modelTotal < line ? "UNDER" : "TOSS-UP";
+  // No line = no call (Nov 12, 2026); the no-odds override below
+  // also nulls the call, but the source must not invent one either.
+  const call = line == null ? null : (modelTotal > line ? "OVER" : modelTotal < line ? "UNDER" : "TOSS-UP");
   const totalW = overW + underW;
   const agree = totalW > 0 ? Math.max(overW, underW) / totalW : 0.5;
-  const absEdge = Math.abs(edge);
+  const absEdge = edge != null ? Math.abs(edge) : 0;
 
   // Confidence
   let conf = 30;

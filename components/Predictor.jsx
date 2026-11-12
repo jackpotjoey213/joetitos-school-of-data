@@ -108,7 +108,7 @@ function perBetPcts(cons, sport, totalLine, spreadOdds, homeAbbr, awayAbbr) {
   return { totalPct, spreadPct, mlPct, homeWinPct, awayWinPct };
 }
 
-function Tracker({ history, sport, trackerAvailable }) {
+function Tracker({ history, sport, trackerAvailable, trackerCheck }) {
   const [window, setWindow] = useState("7d");
   const [showLog, setShowLog] = useState(false);
   const filteredAll = history.filter((h) => h.sport === sport);
@@ -145,6 +145,21 @@ function Tracker({ history, sport, trackerAvailable }) {
         <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, color: sport === "nfl" ? "#22c55e" : "#f59e0b" }}>{sport.toUpperCase()} TRACK RECORD — PREGAME ONLY</span>
         <span style={{ fontSize: 10, color: "#94a3b8" }}>{n} games in window</span>
       </div>
+      {/* TRACKER SELF-CHECK (Nov 12, 2026): the panel counts are
+      reconciled against the 7-day finals feed on every load/refresh.
+      Green means Yesterday and Last 7 Days match the feed exactly,
+      with no missing, misdated, or duplicate games. Red means the
+      record is wrong and says exactly how — do not trust the numbers
+      above it until it is green again. */}
+      {trackerCheck && trackerCheck.problems.length === 0 && (
+        <div style={{ marginTop: 8, fontSize: 11, color: "#22c55e" }}>✓ Tracker check passed — Yesterday {trackerCheck.feedY} and Last 7 Days {trackerCheck.feedW} match the feed exactly, no missing, misdated, or duplicate games.</div>
+      )}
+      {trackerCheck && trackerCheck.problems.length > 0 && (
+        <div style={{ marginTop: 8, fontSize: 11, color: "#ef4444", background: "#2a1215", border: "1px solid #7f1d1d", borderRadius: 8, padding: "8px 10px" }}>
+          <b>⚠️ Tracker check FAILED — do not trust the record above until this is green:</b>
+          {trackerCheck.problems.map((p, i) => (<div key={i} style={{ marginTop: 4 }}>• {p}</div>)}
+        </div>
+      )}
       {!trackerAvailable && <div style={{ marginTop: 8, fontSize: 11, color: "#f59e0b" }}>⚠️ Tracker unavailable (Supabase not configured) — showing this session only. Configure NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY to persist the ledger.</div>}
       <div style={{ display: "flex", gap: 6, marginTop: 10 }}>
         {[["yesterday", "Yesterday"], ["7d", "Last 7 Days"], ["season", "Season"]].map(([k, l]) => (
@@ -157,7 +172,7 @@ function Tracker({ history, sport, trackerAvailable }) {
           ["O/U", `${ou.wins}-${ou.losses}`, `${ou.pct}%`, streak("totalCorrect")],
           ["ATS", `${ats.wins}-${ats.losses}`, `${ats.pct}%`, streak("spreadCorrect")],
           ["ML", `${ml.wins}-${ml.losses}`, `${ml.pct}%`, streak("moneylineCorrect")],
-          ["Avg total error", avgErr, "pts", "—"],
+          ["Avg model error", avgErr, "pts", "—"],
         ].map(([l, v, s, st]) => (
           <div key={l} style={{ textAlign: "center", padding: "8px 4px", borderRadius: 8, background: "#0f0f1a" }}>
             <div style={{ fontSize: 15, fontWeight: 800 }}>{v}</div>
@@ -366,6 +381,11 @@ export default function Predictor() {
   const [log, setLog] = useState("Loading games...");
   const [propsByGame, setPropsByGame] = useState({});
   const [trackerGames, setTrackerGames] = useState([]);
+  // Tracker self-check (Nov 12, 2026): true once the 7-day finals
+  // feed has loaded for the current sport. The check (below) only
+  // runs when this is true, so it never flags "missing" finals while
+  // the feed is still loading.
+  const [trackerFeedReady, setTrackerFeedReady] = useState(false);
   const [propsLoading, setPropsLoading] = useState({});
   const [legs, setLegs] = useState([]);
   const refreshedSports = useRef(new Set());
@@ -412,14 +432,22 @@ export default function Predictor() {
   // down picks or bloat the cards. Past finals do not change, so one
   // fetch per league switch is enough; current-window finals are
   // still graded from the render list below (with live refresh data).
-  const loadTrackerGames = useCallback(async (sp) => {
-    setTrackerGames([]);
+  const loadTrackerGames = useCallback(async (sp, clear = true) => {
+    // FLICKER FIX (Nov 12, 2026): clearing the finals at the start of
+    // every refresh made the tracker briefly show "0 games in window"
+    // with 0-0 records before settling back. On a refresh the sport
+    // hasn't changed, so keep the old finals until the new fetch
+    // returns (clear=false from handleRefresh). On a league switch the
+    // sport HAS changed, so clear (default) — the old sport's finals
+    // must never be graded as the new sport.
+    if (clear) setTrackerGames([]);
     try {
       const endpoint = sp === "nfl" ? "/api/nfl-scores?days=7" : sp === "ncaab" ? "/api/ncaab-scores?days=7" : "/api/nba-scores?days=7";
       const resp = await fetch(endpoint);
       const data = await resp.json();
       setTrackerGames((data.games || []).filter((g) => g.status === "final" && g.liveScore));
-    } catch { setTrackerGames([]); }
+      setTrackerFeedReady(true);
+    } catch { if (clear) setTrackerGames([]); }
   }, []);
 
   const handleRefresh = useCallback(async () => {
@@ -598,13 +626,15 @@ export default function Predictor() {
     // finished during the day never entered Yesterday / Last 7 Days
     // until a switch or reload (Nov 7, 2026). Re-fetch them on every
     // refresh; it only replaces the tracker list, never the render list.
-    loadTrackerGames(sport);
+    // clear=false: keep the old finals until the new fetch returns,
+    // so the tracker never flashes "0 games" mid-refresh (Nov 12, 2026).
+    loadTrackerGames(sport, false);
   }, [games, sport, history, loadTrackerGames]);
 
   const handleRefreshRef = useRef();
   handleRefreshRef.current = handleRefresh;
   useEffect(() => { loadHistory(); }, [loadHistory]);
-  useEffect(() => { refreshedSports.current = new Set(); setExpandedId(null); setPropsByGame({}); loadGames(sport); loadTrackerGames(sport); }, [sport, loadGames, loadTrackerGames]);
+  useEffect(() => { refreshedSports.current = new Set(); setExpandedId(null); setPropsByGame({}); setTrackerFeedReady(false); loadGames(sport); loadTrackerGames(sport); }, [sport, loadGames, loadTrackerGames]);
   useEffect(() => {
     // ROOT CAUSE of the preview dashes (found Oct 29, 2026):
     // On a sport switch, this effect used to run once with the OLD
@@ -715,6 +745,53 @@ export default function Predictor() {
     // games instead of the most recent ones.
     return [...byKey.values()].sort((a, b) => (a.date || "") < (b.date || "") ? -1 : (a.date || "") > (b.date || "") ? 1 : ((a.startTime || "") < (b.startTime || "") ? -1 : 1));
   })();
+
+  // TRACKER SELF-CHECK (Nov 12, 2026 — Joey: "is it working or not?").
+  // The panel and the log render from the same filtered array, so they
+  // can never disagree with each other — the real failure surface is
+  // the record itself: a final missing from it, a final on the wrong
+  // date, or the same game recorded twice. So the check reconciles the
+  // record against the independent source, the 7-day finals feed:
+  // every final in the feed must appear exactly once in the record, on
+  // the feed's own date, and the Yesterday / Last 7 Days counts must
+  // match the feed's counts. Season is only duplicate-checked — the
+  // feed covers 7 days back, not the whole season. Runs only once the
+  // feed has loaded for this sport (trackerFeedReady), never while it
+  // is still loading, so it can't cry wolf on first paint.
+  const trackerCheck = (() => {
+    if (!trackerFeedReady) return null;
+    const feedFinals = trackerGames.filter((g) => g.status === "final" && g.liveScore);
+    const feedByKey = new Map();
+    for (const g of feedFinals) feedByKey.set(String(g.espnId || g.id) + ":" + sport, g);
+    const sportHistory = trackerHistory.filter((h) => h.sport === sport);
+    const histByKey = new Map();
+    const dupKeys = [];
+    for (const h of sportHistory) {
+      const k = String(h.gameId) + ":" + h.sport;
+      if (histByKey.has(k)) dupKeys.push(k);
+      histByKey.set(k, h);
+    }
+    const missing = [];
+    const misdated = [];
+    for (const [k, g] of feedByKey) {
+      const h = histByKey.get(k);
+      const label = `${g.awayAbbr} @ ${g.homeAbbr}`;
+      if (!h) { missing.push(label); continue; }
+      const feedDate = g.startTime ? ptDateFromIso(g.startTime) : null;
+      if (feedDate && h.date && h.date !== feedDate) misdated.push(`${label} (record ${h.date}, feed ${feedDate})`);
+    }
+    const feedDateOf = (g) => (g.startTime ? ptDateFromIso(g.startTime) : null);
+    const feedY = [...feedByKey.values()].filter((g) => feedDateOf(g) === ptDateStr(-1)).length;
+    const feedW = [...feedByKey.values()].filter((g) => { const d = feedDateOf(g); return d && d >= ptDateStr(-6) && d <= ptDateStr(0); }).length;
+    const histY = sportHistory.filter((h) => h.date === ptDateStr(-1)).length;
+    const histW = sportHistory.filter((h) => h.date >= ptDateStr(-6) && h.date <= ptDateStr(0)).length;
+    const problems = [];
+    if (missing.length) problems.push(`${missing.length} final(s) in the feed are missing from the record: ${missing.slice(0, 3).join(", ")}${missing.length > 3 ? "…" : ""}`);
+    if (misdated.length) problems.push(`${misdated.length} record(s) on the wrong date: ${misdated.slice(0, 3).join(", ")}${misdated.length > 3 ? "…" : ""}`);
+    if (dupKeys.length) problems.push(`${dupKeys.length} duplicate record(s) for the same game`);
+    if (feedY !== histY || feedW !== histW) problems.push(`count mismatch — feed Yesterday ${feedY} vs record ${histY}; feed Last 7 Days ${feedW} vs record ${histW}`);
+    return { problems, feedY, feedW, dupCount: dupKeys.length };
+  })();
   const visibleGames = filter === "all" ? games : filter === "live" ? games.filter((g) => g.status === "live") : filter === "completed" ? games.filter((g) => g.status === "final") : games.filter((g) => g.status === "scheduled" || g.status === "live");
   const liveCount = games.filter((g) => g.status === "live").length;
   const finalCount = games.filter((g) => g.status === "final").length;
@@ -744,7 +821,7 @@ export default function Predictor() {
           <button key={k} onClick={() => setFilter(k)} style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid #334155", background: filter === k ? "#6366f1" : "#1e293b", color: "#fff", fontSize: 11, cursor: "pointer" }}>{l}</button>
         ))}
       </div>
-      <Tracker history={trackerHistory} sport={sport} trackerAvailable={trackerAvailable} />
+      <Tracker history={trackerHistory} sport={sport} trackerAvailable={trackerAvailable} trackerCheck={trackerCheck} />
       <ParlayBuilder legs={legs} setLegs={setLegs} />
       <div style={{ margin: "0 12px 10px", fontSize: 11, color: "#94a3b8", textAlign: "center" }}>{log}</div>
       {visibleGames.map((game) => {
