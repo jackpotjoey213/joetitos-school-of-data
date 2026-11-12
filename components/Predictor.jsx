@@ -1,6 +1,11 @@
 "use client";
 import { useState, useEffect, useCallback, useRef } from "react";
 import { buildLiveProjection } from "@/lib/nflModel";
+// Grading math lives in lib/grading.js and model percentages in lib/pcts.js
+// (Nov 12, 2026) so the server-side cron route grades finals and computes
+// lock percentages with the exact same rules as this UI.
+import { marketMarginHome, gradeTotal, gradeSpread, gradeML } from "@/lib/grading";
+import { perBetPcts } from "@/lib/pcts";
 
 function mlToProb(ml) { if (!ml) return 0.5; return ml < 0 ? Math.abs(ml) / (Math.abs(ml) + 100) : 100 / (ml + 100); }
 function americanToDecimal(odds) { return odds > 0 ? 1 + odds / 100 : 1 + 100 / Math.abs(odds); }
@@ -40,16 +45,7 @@ function todayStr(offsetDays = 0) {
 // probabilities. Over/Under and Spread use a normal-distribution estimate
 // from model vs market line (NFL total ~13 pts, margin ~13.5 pts; NBA
 // total ~20 pts, margin ~12 pts), clamped 5–95%. Estimates, not guarantees.
-function normCdf(z) {
-  const t = 1 / (1 + 0.2316419 * Math.abs(z));
-  const d = 0.3989423 * Math.exp(-z * z / 2);
-  let p = d * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274))));
-  p = 1 - p;
-  return z > 0 ? p : 1 - p;
-}
-function pctFromEdge(diff, sigma) {
-  return Math.round(Math.max(5, Math.min(95, normCdf(diff / sigma) * 100)));
-}
+// (normCdf / pctFromEdge / perBetPcts live in lib/pcts.js now.)
 
 // Completed-card fix (Oct 31, 2026): percentages are model % only, no
 // market-implied % alongside. Grading is per market, from a frozen lock
@@ -68,45 +64,7 @@ function ptDateFromIso(iso) {
 function formatLockTime(iso) {
   try { return new Date(iso).toLocaleString("en-US", { timeZone: "America/Los_Angeles", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) + " PT"; } catch { return iso || ""; }
 }
-function marketMarginHome(spreadOdds, homeAbbr) {
-  if (!spreadOdds || spreadOdds.fav == null || spreadOdds.line == null) return null;
-  return spreadOdds.fav === homeAbbr ? -spreadOdds.line : spreadOdds.line;
-}
-function gradeTotal(actualTotal, line, call) {
-  if (actualTotal == null || !line || !call) return null;
-  if (actualTotal === line) return "push";
-  return call === "OVER" ? actualTotal > line : actualTotal < line;
-}
-function gradeSpread(actualMarginHome, spreadOdds, spreadCall, homeAbbr, awayAbbr) {
-  if (actualMarginHome == null || !spreadCall) return null;
-  const mkt = marketMarginHome(spreadOdds, homeAbbr);
-  if (mkt == null) return null;
-  if (spreadCall === homeAbbr) return actualMarginHome === mkt ? "push" : actualMarginHome > mkt;
-  if (spreadCall === awayAbbr) return (-actualMarginHome) === (-mkt) ? "push" : (-actualMarginHome) > (-mkt);
-  return null;
-}
-function gradeML(actualWinner, pick) {
-  if (!actualWinner || !pick) return null;
-  return actualWinner === pick;
-}
 function gradeMark(v) { return v === true ? "✓ Right" : v === false ? "✗ Wrong" : v === "push" ? "Push" : "—"; }
-function perBetPcts(cons, sport, totalLine, spreadOdds, homeAbbr, awayAbbr) {
-  if (!cons || cons.noPick) return { totalPct: null, spreadPct: null, mlPct: null, homeWinPct: null, awayWinPct: null };
-  let totalPct = null, spreadPct = null;
-  if (cons.totalCall && totalLine && cons.modelTotal != null) {
-    const pOver = pctFromEdge(cons.modelTotal - totalLine, sport === "nfl" ? 13 : 20);
-    totalPct = cons.totalCall === "OVER" ? pOver : cons.totalCall === "UNDER" ? 100 - pOver : 50;
-  }
-  const mkt = marketMarginHome(spreadOdds, homeAbbr);
-  if (cons.spreadCall && mkt != null && cons.modelSpread != null) {
-    const pHomeCover = pctFromEdge(cons.modelSpread - mkt, sport === "nfl" ? 13.5 : 12);
-    spreadPct = cons.spreadCall === homeAbbr ? pHomeCover : 100 - pHomeCover;
-  }
-  const homeWinPct = cons.homeWinProb != null ? Math.round(parseFloat(cons.homeWinProb)) : null;
-  const awayWinPct = cons.awayWinProb != null ? Math.round(parseFloat(cons.awayWinProb)) : null;
-  const mlPct = cons.moneylinePick === homeAbbr ? homeWinPct : cons.moneylinePick === awayAbbr ? awayWinPct : null;
-  return { totalPct, spreadPct, mlPct, homeWinPct, awayWinPct };
-}
 
 function Tracker({ history, sport, trackerAvailable, trackerCheck }) {
   const [window, setWindow] = useState("7d");
@@ -408,6 +366,28 @@ export default function Predictor() {
         totalError: +p.total_error, date: p.game_date, sport: p.sport || null,
       })).filter((h) => h.sport); // v2 tracker: only records with an explicit sport
       setHistory(mapped);
+      // SERVER LOCKS (Nov 12, 2026): the cron route locks picks on the
+      // server every day. Sync them into this browser's local lock store
+      // so cards and grading see the same picks in every browser —
+      // including this one, even if it never refreshed before tipoff.
+      // Newest wins: a server lock only replaces a local lock when the
+      // server lock is newer (or there is no local lock), so a manual
+      // Refresh after the cron ran is never clobbered by the older
+      // server lock. Best-effort: a sync failure must never break the
+      // tracker load above.
+      try {
+        for (const row of (data.locks || [])) {
+          if (!row || !row.lock || !row.game_id || !row.sport) continue;
+          const key = lockKeyFor(row.sport);
+          const store = JSON.parse(localStorage.getItem(key) || "{}");
+          const serverAt = row.lock.lockedAt || row.locked_at || row.lock.updated_at || null;
+          const localAt = store[String(row.game_id)]?.lockedAt || null;
+          if (!localAt || !serverAt || new Date(serverAt) >= new Date(localAt)) {
+            store[String(row.game_id)] = { ...row.lock, lockedAt: serverAt, sport: row.sport };
+            localStorage.setItem(key, JSON.stringify(store));
+          }
+        }
+      } catch { /* sync is best-effort */ }
     } catch { setTrackerAvailable(false); }
   }, []);
 
@@ -613,7 +593,10 @@ export default function Predictor() {
             // spread_line / ML-odds / % columns before the server copy
             // can hold the full record — the local record above is
             // complete either way.
-            fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ type: "prediction", ...rec, totalCorrect: tGrade === true ? true : tGrade === false ? false : null, spreadCorrect: sGrade === true ? true : sGrade === false ? false : null, moneylineCorrect: mlGrade === true ? true : mlGrade === false ? false : null, gameId: lockKey }) }).catch(() => {});
+            // A failed ledger write used to be invisible (the response
+            // was never read). Surface it in the log line so a broken
+            // server record is visible on the page, not silent (Nov 12).
+            fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ type: "prediction", ...rec, totalCorrect: tGrade === true ? true : tGrade === false ? false : null, spreadCorrect: sGrade === true ? true : sGrade === false ? false : null, moneylineCorrect: mlGrade === true ? true : mlGrade === false ? false : null, gameId: lockKey }) }).then(async (r) => { try { const d = await r.json(); if (d && d.ok === false && d.error) setLog((prev) => prev + " | ledger error: " + d.error); } catch {} }).catch(() => {});
           }
         }
         return ng;

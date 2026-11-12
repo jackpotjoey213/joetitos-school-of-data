@@ -6,23 +6,48 @@ import { createClient } from "@supabase/supabase-js";
 // { trackerAvailable: false, settings: {}, predictions: [] } so the
 // frontend can show "tracker unavailable" instead of "0 games tracked"
 // as if that were a real record.
+//
+// Server-side key (Nov 12, 2026): route handlers run server-side, so
+// they may use the SERVICE_ROLE key, which bypasses Row Level Security.
+// The anon key is subject to RLS — if the tables have no permissive
+// anon policies, anon inserts/selects fail. Prefer the service key when
+// SUPABASE_SERVICE_ROLE_KEY is set in Vercel env vars (server-only, NO
+// NEXT_PUBLIC_ prefix — it must never reach the browser); fall back to
+// the anon key. If neither is set, the ledger is unavailable.
+//
+// Error surfacing (Nov 12, 2026): Supabase errors used to be swallowed
+// on both sides — the route never checked { error } and the frontend
+// POST never read the response — so a failing insert looked exactly
+// like success and the predictions table stayed empty with no clue why.
+// Every Supabase call below now checks its error and returns it.
 function getClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
-  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
   if (!url || !key) return null;
   try { return createClient(url, key); } catch { return null; }
 }
 
 export async function GET(req) {
   const supabase = getClient();
-  if (!supabase) return NextResponse.json({ trackerAvailable: false, settings: { model_weights: {}, team_calibrations: {} }, predictions: [] });
+  if (!supabase) return NextResponse.json({ trackerAvailable: false, settings: { model_weights: {}, team_calibrations: {} }, predictions: [], locks: [] });
   try {
     const userId = req.headers.get("x-user-id") || "default";
-    const { data } = await supabase.from("user_settings").select("*").eq("user_id", userId).single();
-    const { data: predictions } = await supabase.from("predictions").select("*").eq("user_id", userId).order("created_at", { ascending: false }).limit(500);
-    return NextResponse.json({ trackerAvailable: true, settings: data || { model_weights: {}, team_calibrations: {} }, predictions: predictions || [] });
+    const { data, error: settingsErr } = await supabase.from("user_settings").select("*").eq("user_id", userId).single();
+    const { data: predictions, error: predErr } = await supabase.from("predictions").select("*").eq("user_id", userId).order("created_at", { ascending: false }).limit(500);
+    // Server locks (Nov 12, 2026): the cron route writes pregame locks
+    // here; the frontend syncs them into its local lock store so every
+    // browser shows the same picks. The table may not exist yet (Joey
+    // creates it with the supplied SQL) — degrade to [] instead of
+    // failing the whole settings read.
+    let locks = [];
+    try {
+      const { data: lockRows, error: lockErr } = await supabase.from("locks").select("*").eq("user_id", userId).order("game_date", { ascending: false }).limit(500);
+      if (!lockErr) locks = lockRows || [];
+    } catch { locks = []; }
+    const err = settingsErr?.message || predErr?.message || null;
+    return NextResponse.json({ trackerAvailable: true, settings: data || { model_weights: {}, team_calibrations: {} }, predictions: predictions || [], locks, ...(err ? { error: err } : {}) });
   } catch (e) {
-    return NextResponse.json({ trackerAvailable: false, settings: { model_weights: {}, team_calibrations: {} }, predictions: [], error: e.message });
+    return NextResponse.json({ trackerAvailable: false, settings: { model_weights: {}, team_calibrations: {} }, predictions: [], locks: [], error: e.message });
   }
 }
 
@@ -33,7 +58,8 @@ export async function POST(req) {
   const userId = body.userId || "default";
   try {
     if (body.type === "settings") {
-      await supabase.from("user_settings").upsert({ user_id: userId, model_weights: body.weights || {}, team_calibrations: body.teamCal || {}, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
+      const { error } = await supabase.from("user_settings").upsert({ user_id: userId, model_weights: body.weights || {}, team_calibrations: body.teamCal || {}, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
+      if (error) return NextResponse.json({ ok: false, trackerAvailable: true, error: error.message });
       return NextResponse.json({ ok: true, trackerAvailable: true });
     }
     if (body.type === "prediction") {
@@ -49,12 +75,15 @@ export async function POST(req) {
         spread_call: body.spreadCall || null, total_error: body.totalError, game_date: body.date,
         sport: body.sport || "nba",
       };
-      const { data: existing } = await supabase.from("predictions").select("id").eq("user_id", userId).eq("game_id", body.gameId).limit(1);
+      const { data: existing, error: selErr } = await supabase.from("predictions").select("id").eq("user_id", userId).eq("game_id", body.gameId).limit(1);
+      if (selErr) return NextResponse.json({ ok: false, trackerAvailable: true, error: selErr.message });
       if (existing?.length) {
-        await supabase.from("predictions").update(row).eq("id", existing[0].id);
+        const { error } = await supabase.from("predictions").update(row).eq("id", existing[0].id);
+        if (error) return NextResponse.json({ ok: false, trackerAvailable: true, error: error.message });
         return NextResponse.json({ ok: true, trackerAvailable: true, updated: true });
       }
-      await supabase.from("predictions").insert(row);
+      const { error } = await supabase.from("predictions").insert(row);
+      if (error) return NextResponse.json({ ok: false, trackerAvailable: true, error: error.message });
       return NextResponse.json({ ok: true, trackerAvailable: true });
     }
     return NextResponse.json({ error: "Unknown type" }, { status: 400 });
