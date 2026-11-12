@@ -157,7 +157,7 @@ function Tracker({ history, sport, trackerAvailable, trackerCheck }) {
       {trackerCheck && trackerCheck.problems.length > 0 && (
         <div style={{ marginTop: 8, fontSize: 11, color: "#ef4444", background: "#2a1215", border: "1px solid #7f1d1d", borderRadius: 8, padding: "8px 10px" }}>
           <b>⚠️ Tracker check FAILED — do not trust the record above until this is green:</b>
-          {trackerCheck.problems.map((p, i) => (<div key={i} style={{ marginTop: 4 }}>• {p}</div>)}
+          {trackerCheck.problems.map((p, i) => (<div key={i} style={{ marginTop: 4 }}>• {p}</div>))}
         </div>
       )}
       {!trackerAvailable && <div style={{ marginTop: 8, fontSize: 11, color: "#f59e0b" }}>⚠️ Tracker unavailable (Supabase not configured) — showing this session only. Configure NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY to persist the ledger.</div>}
